@@ -309,6 +309,13 @@ function onPeerMessage(payload) {
                 chatReady = true;
                 clearHelloTimers();
                 pushSystem('Connected — chatting with ' + peerName);
+                // Our own initial hello may have been dropped if the peer's
+                // game hadn't attached its message listener yet (a real
+                // launcher-relay race, not just a retry-timing gap). Echo
+                // once so a peer stuck waiting hears from us right away;
+                // the !chatReady guard means this fires at most once per
+                // connection and can't turn into a reply ping-pong.
+                sayHello();
             }
             updateConnUI('connected');
             break;
@@ -463,12 +470,18 @@ function wireUI() {
         el.panelFiles.classList.toggle('hidden', chat);
     }
 
-    el.composer.addEventListener('submit', function (e) {
-        e.preventDefault();
+    // Plain click/keydown, not a <form submit> — sandboxed iframes without
+    // `allow-forms` silently block form submission (a native default action,
+    // not something preventDefault() can head off from the submit handler).
+    function trySend() {
         var text = el.textInput.value.trim();
         if (!text) return;
         sendText(text);
         el.textInput.value = '';
+    }
+    el.sendBtn.addEventListener('click', trySend);
+    el.textInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); trySend(); }
     });
 
     el.attachBtn.addEventListener('click', function () { el.fileInput.click(); });

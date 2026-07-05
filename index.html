@@ -44,12 +44,12 @@
       <div class="messages" id="messages" aria-live="polite"></div>
       <button class="jump-latest" id="jumpLatest" hidden type="button">New messages ↓</button>
 
-      <form class="composer" id="composer">
+      <div class="composer" id="composer">
         <button type="button" class="icon-btn" id="attachBtn" title="Attach a file" aria-label="Attach a file" disabled>📎</button>
         <input type="file" id="fileInput" multiple hidden>
         <input type="text" id="textInput" placeholder="Pair with a peer to start chatting…" autocomplete="off" disabled maxlength="2000">
-        <button type="submit" class="send-btn" id="sendBtn" disabled>Send</button>
-      </form>
+        <button type="button" class="send-btn" id="sendBtn" disabled>Send</button>
+      </div>
 
       <div class="chat-actions">
         <button class="link-btn" id="clearChatBtn" type="button">Clear chat</button>
