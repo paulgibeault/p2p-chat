@@ -374,6 +374,10 @@ function updateConnUI(status) {
         el.connLabel.textContent = 'Connecting…';
         el.banner.hidden = false;
         el.banner.textContent = 'Connecting to your peer…';
+    } else if (status === 'interrupted') {
+        el.connLabel.textContent = 'Reconnecting…';
+        el.banner.hidden = false;
+        el.banner.textContent = 'Connection interrupted — reconnecting… You can keep typing; messages are delivered when the link recovers.';
     } else if (status === 'connected') {
         var live = (livePeerId && chatReady) ? peers.get(livePeerId) : null;
         el.connLabel.textContent = live ? ('Chatting with ' + live.name) : 'Connected';
@@ -387,11 +391,20 @@ function sayHello() {
 }
 
 function onStatusChange(status) {
-    var wasConnected = currentStatus === 'connected';
+    var prev = currentStatus;
+    var wasLive = prev === 'connected' || prev === 'interrupted';
     currentStatus = status;
 
-    if (status !== 'connected') {
-        if (wasConnected) {
+    if (status === 'interrupted') {
+        // The transport is repairing the SAME session (v1.7): keep the live
+        // thread and any in-flight transfers — sends queue and replay on
+        // recovery — and just tell the user what's happening.
+        if (prev === 'connected' && chatReady && livePeerId) {
+            var iPeer = peers.get(livePeerId);
+            if (iPeer) pushSystemFor(iPeer, 'Connection interrupted — reconnecting…');
+        }
+    } else if (status !== 'connected') {
+        if (wasLive) {
             clearHelloTimers();
             if (chatReady && livePeerId) {
                 var peer = peers.get(livePeerId);
@@ -411,7 +424,11 @@ function onStatusChange(status) {
             livePeerId = null;
             renderPeerTabs();
         }
-    } else if (!wasConnected) {
+    } else if (prev === 'interrupted' && chatReady && livePeerId) {
+        // Same session resumed — queued messages are replaying; no re-hello.
+        var rPeer = peers.get(livePeerId);
+        if (rPeer) pushSystemFor(rPeer, 'Reconnected');
+    } else if (prev !== 'connected') {
         chatReady = false;
         livePeerId = null;
         sayHello();
