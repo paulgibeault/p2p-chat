@@ -10,14 +10,21 @@ messages and files directly over the resulting WebRTC data channel.
 
 ## Features
 
-- Text chat with message history, persisted across reloads via `Arcade.state`.
+- A tab per known peer. `Arcade.peer` is a strictly 1:1 connection — only one
+  device can be live at a time — but this game remembers every peer it has
+  ever exchanged a hello with (keyed by a self-generated persistent id, not
+  just a display name) and gives each its own thread. Only the tab matching
+  the currently-connected peer is "live"; every other known peer's tab is a
+  read-only archive of past history until that peer reconnects.
+- Text chat with message history per peer, persisted across reloads via
+  `Arcade.state`.
 - File/image transfer — chunked and reassembled over the data channel (no
   binary/file support exists at the framework level, so this game owns that
   chunking itself; see `app.js`).
-- A dedicated Files tab for managing everything sent or received in the
-  session (download, remove individual files, clear all).
-- "Clear chat" / "Clear files", connection-status banner, and a lightbox for
-  image previews.
+- A dedicated Files tab per peer for managing everything sent or received
+  with them (download, remove individual files, clear all).
+- "Clear chat" / "Clear files" (scoped to the peer tab in view),
+  connection-status banner, and a lightbox for image previews.
 
 ## Integration notes
 
