@@ -72,6 +72,7 @@ var chatReady = false;
 var helloTimers = [];
 var myName = 'Player';
 var currentStatus = null;
+var pausedSends = [];   // resolvers for sendChunk() calls parked while status === 'interrupted'
 
 // ---- DOM refs -------------------------------------------------------------
 var el = {
@@ -366,6 +367,12 @@ function pushSystemFor(peer, text) {
 // ---- connection status ---------------------------------------------------
 function clearHelloTimers() { helloTimers.forEach(clearTimeout); helloTimers = []; }
 
+function resumePausedSends() {
+    var waiters = pausedSends;
+    pausedSends = [];
+    waiters.forEach(function (fn) { fn(); });
+}
+
 function updateConnUI(status) {
     el.connDot.className = 'dot ' + status;
     if (status === 'unavailable') {
@@ -400,6 +407,7 @@ function onStatusChange(status) {
     var prev = currentStatus;
     var wasLive = prev === 'connected' || prev === 'interrupted';
     currentStatus = status;
+    if (status !== 'interrupted') resumePausedSends(); // unpark file-chunk sends, whether recovering or giving up
 
     if (status === 'interrupted') {
         // The transport is repairing the SAME session (v1.7): keep the live
@@ -594,6 +602,13 @@ function sendFile(file) {
         if (!ok) { fail(); return; }
 
         function sendChunk(seq) {
+            if (currentStatus === 'interrupted') {
+                // Sends during 'interrupted' still queue for replay (v1.7) rather than
+                // failing outright, so racing ahead here would silently blow the
+                // transport's replay-queue cap; park until the status settles.
+                return new Promise(function (resolve) { pausedSends.push(resolve); }).then(function () { return sendChunk(seq); });
+            }
+            if (peer.id !== livePeerId || !chatReady) { fail(); return; }
             if (seq >= total) {
                 Arcade.peer.send({ t: 'file-done', id: id });
                 entry.file.state = 'done';
@@ -765,6 +780,7 @@ function wireUI() {
 }
 
 function init() {
+    if (Arcade.state && Arcade.state.migrate) Arcade.state.migrate('v1', function () {}); // no legacy keys to move; satisfies the migration sentinel
     myName = (Arcade.player && Arcade.player.name && Arcade.player.name()) || 'Player';
     myId = ensureMyId();
     peers = loadPeers();
@@ -779,6 +795,13 @@ function init() {
 
     Arcade.peer.onStatus(onStatusChange);
     Arcade.peer.onMessage(onPeerMessage);
+
+    if (Arcade.player && Arcade.player.onChange) {
+        Arcade.player.onChange(function () {
+            myName = (Arcade.player.name && Arcade.player.name()) || myName;
+            if (chatReady && livePeerId) sayHello();
+        });
+    }
 
     if (Arcade.onStateReplaced) {
         Arcade.onStateReplaced(function () {
