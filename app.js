@@ -7,6 +7,7 @@ var MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB per file — demo cap, no framewor
 var HISTORY_LIMIT = 200;              // per peer
 var MAX_KNOWN_PEERS = 30;             // evict the least-recently-seen non-live peer beyond this
 var CHUNK_PACE_MS = 0;                // yield to the event loop between chunks
+var MAX_CHUNKS = Math.ceil(MAX_FILE_BYTES / RAW_CHUNK_BYTES); // bound a peer-declared file-meta chunk count
 
 // ---- tiny utils ---------------------------------------------------------
 function uid() {
@@ -17,6 +18,11 @@ function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
+}
+// Peer-supplied ids end up in HTML attributes, querySelector() selectors and
+// Map keys, so they're constrained at the door rather than escaped per use.
+function sanitizeId(id) {
+    return typeof id === 'string' ? id.replace(/[^\w-]/g, '_').slice(0, 128) : '';
 }
 function formatBytes(n) {
     if (n < 1024) return n + ' B';
@@ -445,7 +451,7 @@ function onPeerMessage(payload) {
         case 'hello': {
             // Fall back to a name-derived id for a peer still running an
             // older build that doesn't send one, rather than dropping them.
-            var incomingId = payload.id || ('anon-' + (payload.from || 'peer'));
+            var incomingId = sanitizeId(payload.id) || sanitizeId('anon-' + (payload.from || 'peer'));
             var peer = ensurePeer(incomingId, payload.from || 'Peer');
             if (!chatReady) {
                 chatReady = true;
@@ -472,7 +478,7 @@ function onPeerMessage(payload) {
             if (!livePeerId) break;
             var msgPeer = peers.get(livePeerId);
             if (!msgPeer) break;
-            commitEntryFor(msgPeer, { id: payload.id || uid(), dir: 'in', kind: 'text', text: String(payload.text || ''), ts: payload.ts || Date.now() });
+            commitEntryFor(msgPeer, { id: sanitizeId(payload.id) || uid(), dir: 'in', kind: 'text', text: String(payload.text || ''), ts: payload.ts || Date.now() });
             break;
         }
 
@@ -480,13 +486,17 @@ function onPeerMessage(payload) {
             if (!livePeerId) break;
             var metaPeer = peers.get(livePeerId);
             if (!metaPeer) break;
-            metaPeer.pendingReceives.set(payload.id, {
+            var metaId = sanitizeId(payload.id);
+            if (!metaId) break;
+            var totalChunks = payload.chunks;
+            if (typeof totalChunks !== 'number' || !isFinite(totalChunks) || totalChunks < 1 || totalChunks > MAX_CHUNKS) break;
+            metaPeer.pendingReceives.set(metaId, {
                 name: payload.name, mime: payload.mime, size: payload.size,
-                total: payload.chunks, chunks: new Array(payload.chunks), got: 0
+                total: totalChunks, chunks: new Array(totalChunks), got: 0
             });
             commitEntryFor(metaPeer, {
                 id: uid(), dir: 'in', kind: 'file', ts: payload.ts || Date.now(),
-                file: { id: payload.id, name: payload.name, mime: payload.mime, size: payload.size, state: 'receiving', progress: 0 }
+                file: { id: metaId, name: payload.name, mime: payload.mime, size: payload.size, state: 'receiving', progress: 0 }
             });
             break;
         }
@@ -495,15 +505,19 @@ function onPeerMessage(payload) {
             if (!livePeerId) break;
             var chunkPeer = peers.get(livePeerId);
             if (!chunkPeer) break;
-            var pending = chunkPeer.pendingReceives.get(payload.id);
+            var chunkId = sanitizeId(payload.id);
+            if (!chunkId) break;
+            var pending = chunkPeer.pendingReceives.get(chunkId);
             if (!pending) break;
-            pending.chunks[payload.seq] = payload.data;
+            var seq = payload.seq;
+            if (typeof seq !== 'number' || seq < 0 || seq >= pending.total) break;
+            pending.chunks[seq] = payload.data;
             pending.got++;
             var progress = Math.round((pending.got / pending.total) * 100);
-            var entry = chunkPeer.history.find(function (m) { return m.kind === 'file' && m.file.id === payload.id; });
+            var entry = chunkPeer.history.find(function (m) { return m.kind === 'file' && m.file.id === chunkId; });
             if (entry) {
                 entry.file.progress = progress;
-                if (viewPeerId === chunkPeer.id) { updateFileRowInMessages(chunkPeer, payload.id); renderFilesPanelFor(chunkPeer); }
+                if (viewPeerId === chunkPeer.id) { updateFileRowInMessages(chunkPeer, chunkId); renderFilesPanelFor(chunkPeer); }
             }
             break;
         }
@@ -512,9 +526,11 @@ function onPeerMessage(payload) {
             if (!livePeerId) break;
             var donePeer = peers.get(livePeerId);
             if (!donePeer) break;
-            var p = donePeer.pendingReceives.get(payload.id);
-            donePeer.pendingReceives.delete(payload.id);
-            var e = donePeer.history.find(function (m) { return m.kind === 'file' && m.file.id === payload.id; });
+            var doneId = sanitizeId(payload.id);
+            if (!doneId) break;
+            var p = donePeer.pendingReceives.get(doneId);
+            donePeer.pendingReceives.delete(doneId);
+            var e = donePeer.history.find(function (m) { return m.kind === 'file' && m.file.id === doneId; });
             if (!p || !e) break;
             if (p.got !== p.total || p.chunks.indexOf(undefined) !== -1) {
                 e.file.state = 'failed';
@@ -526,13 +542,13 @@ function onPeerMessage(payload) {
                 byteParts.forEach(function (b) { combined.set(b, offset); offset += b.length; });
                 var blob = new Blob([combined], { type: p.mime || 'application/octet-stream' });
                 var url = URL.createObjectURL(blob);
-                donePeer.blobUrls.set(payload.id, url);
+                donePeer.blobUrls.set(doneId, url);
                 e.file.state = 'done';
                 e.file.progress = 100;
                 e.file.available = true;
             }
             persist();
-            if (viewPeerId === donePeer.id) { updateFileRowInMessages(donePeer, payload.id); renderFilesPanelFor(donePeer); }
+            if (viewPeerId === donePeer.id) { updateFileRowInMessages(donePeer, doneId); renderFilesPanelFor(donePeer); }
             break;
         }
     }
