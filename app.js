@@ -14,11 +14,9 @@ function uid() {
     if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
     return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-}
+// The SDK ships the canonical escaper — one implementation to audit,
+// shared with every other arcade app (see GAME_INTEGRATION §7b).
+var escapeHtml = Arcade.html.escape;
 // Peer-supplied ids end up in HTML attributes, querySelector() selectors and
 // Map keys, so they're constrained at the door rather than escaped per use.
 function sanitizeId(id) {
