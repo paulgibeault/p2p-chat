@@ -268,7 +268,7 @@ body {
   flex: 1;
   min-width: 0;
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: max(0.9rem, 16px);
   background: var(--bg-raised);
   color: var(--text);
   border: 1px solid var(--accent);
@@ -319,7 +319,7 @@ body {
   color: var(--text);
   border-radius: 8px;
   padding: 0.5rem 0.7rem;
-  font-size: 0.9rem;
+  font-size: max(0.9rem, 16px);
   outline: none;
 }
 .modal-row #groupNameInput:focus { border-color: var(--accent); }
@@ -540,7 +540,8 @@ body {
   color: var(--text);
   border-radius: 999px;
   padding: 0.5rem 0.9rem;
-  font-size: 0.9rem;
+  /* 16px minimum stops iOS Safari from auto-zooming on focus */
+  font-size: max(0.9rem, 16px);
   outline: none;
 }
 #textInput:focus { border-color: var(--accent); }
