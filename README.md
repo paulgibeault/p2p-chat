@@ -11,16 +11,20 @@ any number of simultaneously-connected peers, not just a single pair.
 
 ## Features
 
-- A tab per known peer, plus tabs for group chats. Peer identity comes from
-  the SDK's roster/presence APIs (`Arcade.peer.onReady` /
-  `Arcade.peer.onPeersChange`) — no hand-rolled hello handshake. A tab is
-  "live" when its peer (or, for a group, any of its members) is currently
-  reachable; otherwise it's a read-only archive of past history until they
-  reconnect.
-- **Renameable tabs** — click the ✎ next to a thread's name to relabel it
-  for your own organization. A rename is local and sticks even if the peer's
-  device name or a group's synced name later changes.
-- **Group chats** — the "+ Group" button lets you name a group and pick
+- A two-screen layout: a **conversations screen** (most-recently-active
+  first, with unread badges and live-status dots) and a **full-page chat**
+  you tap into, with a back button to return. Group rows list every member
+  inline with a per-member presence dot that updates in real time. Peer
+  identity comes from the SDK's roster/presence APIs (`Arcade.peer.onReady`
+  / `Arcade.peer.onPeersChange`) — no hand-rolled hello handshake. A
+  conversation is "live" when its peer (or, for a group, any of its members)
+  is currently reachable; otherwise it's a read-only archive of past history
+  until they reconnect.
+- A **⋯ menu** in the chat header holding rename, members (for groups),
+  clear chat, and leave/remove — destructive actions take a second
+  confirming tap. A rename is local and sticks even if the peer's device
+  name or a group's synced name later changes.
+- **Group chats** — the ＋ button lets you name a group and pick
   members from your known peers. Membership is a real synced concept: the
   creator's client is the source of truth (an unforgeable `fromDeviceId`,
   not a self-declared field, is what proves who's allowed to update a
@@ -31,12 +35,28 @@ any number of simultaneously-connected peers, not just a single pair.
   `Arcade.state`.
 - File/image transfer — chunked and reassembled over the data channel (no
   binary/file support exists at the framework level, so this game owns that
-  chunking itself; see `app.js`). Group file shares fan out individually to
-  each member.
-- A dedicated Files tab per thread for managing everything sent or received
-  there (download, remove individual files, clear all).
-- "Clear chat" / "Clear files" (scoped to the thread in view),
-  connection-status banner, and a lightbox for image previews.
+  chunking itself; see `app.js`). Files live inline in the chat: images as
+  thumbnails, everything else as a card with a download link; previewable
+  types (image/video/audio/PDF) open in a lightbox. Group file shares fan
+  out individually to each member.
+- A compact status pill on the conversations screen shows transport state
+  (standalone / not paired / connecting / connected / reconnecting).
+
+## Delivery semantics (lossy, at-most-once)
+
+Messages ride the launcher's data channel fire-and-forget: **at-most-once**
+delivery, with no acknowledgements, retries, or store-and-forward. A message
+sent to an offline peer is simply lost — it stays in the *sender's* local
+history, but nothing backfills the recipient when they reconnect. The sender
+marks a bubble "not delivered" only when the transport refuses the send
+outright; a send the transport accepted can still be lost in flight. (The
+transport does replay sends queued during a brief `interrupted` window, but
+that is best-effort, not an end-to-end guarantee.) Every message routes to
+exactly one conversation: frames carry an optional `groupId`, so a group
+message lands only in that group — and only if the sender is a member — and
+a direct message lands only in that peer's 1:1 thread. The one
+re-sync-on-reconnect exception is group *membership*: the creator re-pushes
+the member list to peers as they come back online.
 
 ## Integration notes
 
