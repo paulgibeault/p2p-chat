@@ -20,64 +20,50 @@
 
 <div class="app" id="app">
 
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-icon" aria-hidden="true">💬</span>
-      <h1>P2P Chat</h1>
+  <section class="screen" id="screenList">
+    <header class="list-header">
+      <div class="list-title">
+        <h1>Chats</h1>
+      </div>
+      <div class="list-header-right">
+        <span class="conn" id="conn" title="Connection status">
+          <span class="dot" id="connDot"></span>
+          <span class="connLabel" id="connLabel">Unavailable</span>
+        </span>
+        <button type="button" class="new-chat-btn" id="newChatBtn" title="New group chat" aria-label="Start a new group chat" hidden>+</button>
+      </div>
+    </header>
+
+    <nav class="conv-list" id="convList" aria-label="Chats" hidden></nav>
+    <p class="empty-hint" id="peersEmptyHint" hidden>Pair with a peer from the arcade's Multiplayer menu to start a chat. Every peer you've talked to gets its own conversation here — rename them or start a group once you know a few people.</p>
+  </section>
+
+  <section class="screen" id="screenThread" hidden>
+
+    <div class="thread-header" id="threadHeader">
+      <button type="button" class="icon-btn back-btn" id="backBtn" title="Back to chats" aria-label="Back to chats">‹</button>
+      <div class="thread-titles">
+        <span class="thread-name" id="threadName"></span>
+        <span class="thread-sub" id="threadSub"></span>
+      </div>
+      <button type="button" class="icon-btn menu-btn" id="menuBtn" title="Conversation options" aria-label="Conversation options">⋯</button>
     </div>
-    <div class="conn" id="conn" title="Connection status">
-      <span class="dot" id="connDot"></span>
-      <span class="connLabel" id="connLabel">Unavailable</span>
-    </div>
-  </header>
 
-  <div class="banner" id="banner" hidden></div>
-
-  <nav class="peer-tabs" id="peerTabs" role="tablist" aria-label="Chats" hidden></nav>
-  <button type="button" class="new-group-btn" id="newGroupBtn" title="New group chat" aria-label="New group chat" hidden>+ Group</button>
-  <p class="empty-hint" id="peersEmptyHint" hidden>Pair with a peer from the arcade's Multiplayer menu to start a chat. Every peer you've talked to gets its own tab here — rename tabs or start a group once you know a few people.</p>
-
-  <div class="thread-header" id="threadHeader" hidden>
-    <span class="thread-name" id="threadName"></span>
-    <button type="button" class="icon-btn" id="renameBtn" title="Rename" aria-label="Rename this chat">✎</button>
-    <button type="button" class="icon-btn" id="membersBtn" title="Members" aria-label="Group members" hidden>👥</button>
-  </div>
-
-  <nav class="tabs" id="subTabs" role="tablist" hidden>
-    <button class="tab active" id="tabBtnChat" data-tab="chat" role="tab" aria-selected="true">Chat</button>
-    <button class="tab" id="tabBtnFiles" data-tab="files" role="tab" aria-selected="false">Files <span class="badge" id="filesBadge" hidden>0</span></button>
-  </nav>
-
-  <main class="panels" id="panels" hidden>
-
-    <section class="panel" id="panel-chat">
+    <div class="chat-body">
       <div class="messages" id="messages" aria-live="polite"></div>
       <button class="jump-latest" id="jumpLatest" hidden type="button">New messages ↓</button>
+    </div>
 
-      <p class="peer-archived-hint" id="peerArchivedHint" hidden></p>
+    <p class="peer-archived-hint" id="peerArchivedHint" hidden></p>
 
-      <div class="composer" id="composer">
-        <button type="button" class="icon-btn" id="attachBtn" title="Attach a file" aria-label="Attach a file" disabled>📎</button>
-        <input type="file" id="fileInput" multiple hidden>
-        <input type="text" id="textInput" placeholder="Pair with a peer to start chatting…" autocomplete="off" disabled maxlength="2000">
-        <button type="button" class="send-btn" id="sendBtn" disabled>Send</button>
-      </div>
+    <div class="composer" id="composer">
+      <button type="button" class="icon-btn" id="attachBtn" title="Attach a file" aria-label="Attach a file" disabled>📎</button>
+      <input type="file" id="fileInput" multiple hidden>
+      <input type="text" id="textInput" placeholder="Pair with a peer to start chatting…" autocomplete="off" disabled maxlength="2000">
+      <button type="button" class="send-btn" id="sendBtn" disabled>Send</button>
+    </div>
 
-      <div class="chat-actions">
-        <button class="link-btn" id="clearChatBtn" type="button">Clear chat</button>
-      </div>
-    </section>
-
-    <section class="panel hidden" id="panel-files">
-      <div class="files-toolbar">
-        <span id="filesCount">0 files</span>
-        <button class="link-btn" id="clearFilesBtn" type="button">Clear files</button>
-      </div>
-      <div class="files-list" id="filesList"></div>
-      <p class="empty-hint" id="filesEmptyHint">Files sent or received in this chat will show up here.</p>
-    </section>
-
-  </main>
+  </section>
 </div>
 
 <div class="lightbox" id="lightbox" hidden>
@@ -108,6 +94,14 @@
       <button type="button" class="link-btn" id="membersModalLeave">Leave group</button>
       <button type="button" class="send-btn" id="membersModalClose">Close</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay sheet" id="threadMenu" hidden>
+  <div class="modal-card">
+    <h2 class="modal-title" id="threadMenuTitle"></h2>
+    <div class="sheet-list" id="threadMenuList"></div>
+    <button type="button" class="sheet-cancel" id="threadMenuCancel">Cancel</button>
   </div>
 </div>
 

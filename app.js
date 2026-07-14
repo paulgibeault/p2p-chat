@@ -74,25 +74,22 @@ var viewKey = null;       // 'p:<deviceId>' or 'g:<groupId>' — thread currentl
 var currentStatus = null; // overall Arcade.peer.status() — session-wide transport health
 var pausedSends = [];     // resolvers for sendChunk() calls parked while status === 'interrupted'
 var renaming = false;     // guards against double-committing the inline rename input
+var screenMode = 'list';  // 'list' (conversation list, the home screen) | 'thread' (full-page chat)
+var threadMenuArmed = null; // destructive ⋯-sheet action awaiting its confirm tap
 
 // ---- DOM refs -------------------------------------------------------------
 var el = {
     connDot: document.getElementById('connDot'),
     connLabel: document.getElementById('connLabel'),
-    banner: document.getElementById('banner'),
-    peerTabs: document.getElementById('peerTabs'),
-    newGroupBtn: document.getElementById('newGroupBtn'),
+    screenList: document.getElementById('screenList'),
+    screenThread: document.getElementById('screenThread'),
+    convList: document.getElementById('convList'),
+    newChatBtn: document.getElementById('newChatBtn'),
     peersEmptyHint: document.getElementById('peersEmptyHint'),
-    threadHeader: document.getElementById('threadHeader'),
+    backBtn: document.getElementById('backBtn'),
     threadName: document.getElementById('threadName'),
-    renameBtn: document.getElementById('renameBtn'),
-    membersBtn: document.getElementById('membersBtn'),
-    subTabs: document.getElementById('subTabs'),
-    tabBtnChat: document.getElementById('tabBtnChat'),
-    tabBtnFiles: document.getElementById('tabBtnFiles'),
-    panels: document.getElementById('panels'),
-    panelChat: document.getElementById('panel-chat'),
-    panelFiles: document.getElementById('panel-files'),
+    threadSub: document.getElementById('threadSub'),
+    menuBtn: document.getElementById('menuBtn'),
     messages: document.getElementById('messages'),
     jumpLatest: document.getElementById('jumpLatest'),
     peerArchivedHint: document.getElementById('peerArchivedHint'),
@@ -101,11 +98,6 @@ var el = {
     fileInput: document.getElementById('fileInput'),
     textInput: document.getElementById('textInput'),
     sendBtn: document.getElementById('sendBtn'),
-    clearChatBtn: document.getElementById('clearChatBtn'),
-    filesBadge: document.getElementById('filesBadge'),
-    filesList: document.getElementById('filesList'),
-    filesCount: document.getElementById('filesCount'),
-    clearFilesBtn: document.getElementById('clearFilesBtn'),
     lightbox: document.getElementById('lightbox'),
     lightboxContent: document.getElementById('lightboxContent'),
     lightboxClose: document.getElementById('lightboxClose'),
@@ -119,7 +111,11 @@ var el = {
     membersModal: document.getElementById('membersModal'),
     membersModalList: document.getElementById('membersModalList'),
     membersModalLeave: document.getElementById('membersModalLeave'),
-    membersModalClose: document.getElementById('membersModalClose')
+    membersModalClose: document.getElementById('membersModalClose'),
+    threadMenu: document.getElementById('threadMenu'),
+    threadMenuTitle: document.getElementById('threadMenuTitle'),
+    threadMenuList: document.getElementById('threadMenuList'),
+    threadMenuCancel: document.getElementById('threadMenuCancel')
 };
 
 // ---- identity --------------------------------------------------------
@@ -160,9 +156,8 @@ function evictStalePeers() {
         var drop = candidates.shift();
         revokeBlobUrls(drop);
         peers.delete(drop.id);
-        if (viewKey === peerKey(drop.id)) viewKey = null;
+        if (viewKey === peerKey(drop.id)) { viewKey = null; if (screenMode === 'thread') showScreen('list'); }
     }
-    if (!viewKey) viewKey = orderedThreads()[0] ? orderedThreads()[0].key : null;
 }
 
 function ensurePeer(id, name) {
@@ -206,11 +201,14 @@ function currentThread() {
 }
 
 function switchView(key) {
-    if (viewKey === key) return;
+    var changed = viewKey !== key;
     viewKey = key;
     var t = currentThread();
     if (t) t.obj.unread = 0;
-    renderAllForView();
+    // Re-entering the same thread from the list: its DOM stayed current (rows
+    // append even while the list is up), so just clear the unread badge.
+    if (changed) renderAllForView();
+    else renderConvList();
 }
 
 // Every group member the current device can currently reach directly.
@@ -362,57 +360,78 @@ function updateFileRowInMessages(thread, fileId) {
     card.outerHTML = fileBubbleInner(thread, entry);
 }
 
-function renderFilesPanelFor(thread) {
-    var files = thread ? thread.history.filter(function (m) { return m.kind === 'file'; }) : [];
-    el.filesBadge.hidden = files.length === 0;
-    el.filesBadge.textContent = files.length;
-    el.filesCount.textContent = files.length + (files.length === 1 ? ' file' : ' files');
-    el.filesList.innerHTML = !thread ? '' : files.slice().reverse().map(function (m) {
-        var f = m.file;
-        var url = thread.blobUrls.get(f.id);
-        var dirTag = m.dir === 'out' ? 'Sent' : (m.fromName ? escapeHtml(m.fromName) : 'Received');
-        var sub = formatBytes(f.size) + ' · ' + formatTime(m.ts);
-        if (f.state === 'sending' || f.state === 'receiving') sub += ' · ' + (f.progress || 0) + '%';
-        else if (f.available === false) sub += ' · unavailable after reload';
-        else if (f.state === 'failed') sub += ' · failed';
-        var actions = '';
-        if (url) actions += '<a href="' + url + '" download="' + escapeHtml(f.name) + '" title="Download">⬇️</a>';
-        actions += '<button class="remove" data-remove="' + f.id + '" title="Remove">🗑️</button>';
-        var previewable = url && isPreviewable(f.mime);
-        return '<div class="file-row' + (previewable ? ' previewable' : '') + '"' +
-            (previewable ? ' data-file-id="' + f.id + '" data-mime="' + escapeHtml(f.mime) + '" data-file-name="' + escapeHtml(f.name) + '" title="Click to preview"' : '') + '>' +
-            '<span class="file-icon">' + fileIconFor(f.mime) + '</span>' +
-            '<div class="file-info"><div class="file-name"><span class="dir-tag">' + dirTag + '</span>' + escapeHtml(f.name) + '</div>' +
-            '<div class="file-sub">' + sub + '</div></div>' +
-            '<div class="row-actions">' + actions + '</div>' +
-            '</div>';
-    }).join('');
+function lastMessagePreviewFor(thread) {
+    for (var i = thread.history.length - 1; i >= 0; i--) {
+        var m = thread.history[i];
+        if (m.dir === 'sys') continue;
+        var prefix = m.dir === 'out' ? 'You: ' : '';
+        if (m.kind === 'file') return prefix + '📎 ' + m.file.name;
+        return prefix + m.text;
+    }
+    return null;
 }
 
-function renderTabs() {
+function initialFor(name) { return (name || '?').trim().charAt(0).toUpperCase() || '?'; }
+
+// Per-member presence chips shown on a group's list row — re-rendered on
+// every roster/status event, so the dots track liveness in real time.
+function groupMembersInline(g) {
+    var me = myDeviceId();
+    return g.members
+        .filter(function (m) { return m.deviceId !== me; })
+        .map(function (m) {
+            var on = isLive(m.deviceId);
+            return '<span class="member-chip' + (on ? ' online' : '') + '"><span class="chip-dot"></span>' + escapeHtml(m.name) + '</span>';
+        }).join('');
+}
+
+// Renders the LRU conversation list (orderedThreads() is already sorted
+// most-recently-active first). Safe to call while the thread screen is
+// showing too — it just updates hidden DOM (unread badges, previews) so
+// the list is fresh whenever the user taps back.
+function renderConvList() {
     var threads = orderedThreads();
-    el.peerTabs.hidden = threads.length === 0;
+    el.convList.hidden = threads.length === 0;
     el.peersEmptyHint.hidden = threads.length !== 0;
-    el.subTabs.hidden = threads.length === 0;
-    el.panels.hidden = threads.length === 0;
-    el.newGroupBtn.hidden = peers.size === 0;
-    el.peerTabs.innerHTML = threads.map(function (t) {
-        var isActive = t.key === viewKey;
+    el.newChatBtn.hidden = peers.size === 0;
+    el.convList.innerHTML = threads.map(function (t) {
         var isLiveNow = t.kind === 'peer' ? isLive(t.id) : groupHasAnyLiveMember(t.obj);
-        var cls = 'peer-tab' + (isActive ? ' active' : '') + (isLiveNow ? ' live' : '');
-        var unread = t.obj.unread > 0 ? '<span class="peer-unread">' + t.obj.unread + '</span>' : '';
-        var icon = t.kind === 'group' ? '<span class="tab-icon" aria-hidden="true">👥</span>' : '<span class="peer-dot"></span>';
-        return '<button type="button" class="' + cls + '" data-tab-key="' + t.key + '" role="tab" aria-selected="' + isActive + '" title="' + escapeHtml(t.obj.name) + '">' +
-            icon + escapeHtml(t.obj.name) + unread + '</button>';
+        var preview = lastMessagePreviewFor(t.obj);
+        var sub = preview ? escapeHtml(preview) : 'No messages yet';
+        var unread = t.obj.unread > 0 ? '<span class="conv-unread">' + t.obj.unread + '</span>' : '';
+        var avatar = t.kind === 'group' ? '👥' : escapeHtml(initialFor(t.obj.name));
+        var time = t.activity ? formatTime(t.activity) : '';
+        var members = t.kind === 'group' ? '<span class="conv-members">' + groupMembersInline(t.obj) + '</span>' : '';
+        return '<div class="conv-row' + (isLiveNow ? ' live' : '') + '" data-tab-key="' + t.key + '" role="button" tabindex="0" aria-label="Open chat with ' + escapeHtml(t.obj.name) + '">' +
+            '<span class="conv-avatar' + (t.kind === 'group' ? ' group' : '') + '" aria-hidden="true">' + avatar + '<span class="conv-live-dot"></span></span>' +
+            '<span class="conv-body">' +
+              '<span class="conv-top-row"><span class="conv-name">' + escapeHtml(t.obj.name) + '</span><span class="conv-time">' + time + '</span></span>' +
+              '<span class="conv-bottom-row"><span class="conv-preview">' + sub + '</span>' + unread + '</span>' +
+              members +
+            '</span>' +
+            '</div>';
     }).join('');
 }
 
 function updateThreadHeader() {
     var t = currentThread();
-    if (!t) { el.threadHeader.hidden = true; return; }
-    el.threadHeader.hidden = false;
+    if (!t) return;
     el.threadName.textContent = t.obj.name;
-    el.membersBtn.hidden = t.kind !== 'group';
+    if (t.kind === 'group') {
+        var total = t.obj.members.length;
+        var online = liveGroupMembers(t.obj).length;
+        el.threadSub.textContent = total + (total === 1 ? ' member' : ' members') + (online ? ' · ' + online + ' online' : '');
+    } else {
+        el.threadSub.textContent = isLive(t.obj.id) ? 'online' : 'offline';
+    }
+}
+
+// ---- screen navigation --------------------------------------------------
+function showScreen(mode) {
+    screenMode = mode;
+    el.screenList.hidden = mode !== 'list';
+    el.screenThread.hidden = mode !== 'thread';
+    if (mode === 'list') renderConvList();
 }
 
 function setComposerEnabled(on, placeholder) {
@@ -445,8 +464,7 @@ function updateComposerForView() {
 function renderAllForView() {
     var t = currentThread();
     renderMessagesFor(t ? t.obj : null);
-    renderFilesPanelFor(t ? t.obj : null);
-    renderTabs();
+    renderConvList();
     updateThreadHeader();
     updateComposerForView();
 }
@@ -472,13 +490,17 @@ function pushEntry(thread, entry) {
 function commitEntryFor(thread, entry) {
     var trimmed = pushEntry(thread, entry);
     var key = thread.creatorId !== undefined ? groupKey(thread.id) : peerKey(thread.id);
+    // "Unread" means a real incoming message arrived while the user wasn't
+    // looking at this thread — including when they're back on the list with
+    // the thread still notionally selected.
+    var viewing = viewKey === key && screenMode === 'thread';
+    if (entry.dir === 'in' && !viewing) thread.unread++;
     if (viewKey !== key) {
-        if (entry.dir !== 'out') thread.unread++;
-        renderTabs();
+        renderConvList();
         return;
     }
     if (trimmed) renderAllForView();
-    else { appendRow(thread, entry); renderFilesPanelFor(thread); renderTabs(); }
+    else { appendRow(thread, entry); renderConvList(); updateThreadHeader(); }
 }
 function pushSystemFor(thread, text) {
     commitEntryFor(thread, { id: uid(), dir: 'sys', kind: 'text', text: text, ts: Date.now() });
@@ -491,32 +513,23 @@ function resumePausedSends() {
     waiters.forEach(function (fn) { fn(); });
 }
 
+// The header status pill is the whole connection story — per-conversation
+// reachability lives on the rows' live dots and the thread subtitle.
 function updateConnUI(status) {
     currentStatus = status;
     el.connDot.className = 'dot ' + status;
-    if (status === 'unavailable') {
-        el.connLabel.textContent = 'Standalone';
-        el.banner.hidden = false;
-        el.banner.textContent = 'Running standalone — open this game from the arcade and pair via the Multiplayer menu to chat with someone.';
-    } else if (status === 'idle') {
-        el.connLabel.textContent = 'Not paired';
-        el.banner.hidden = false;
-        el.banner.textContent = 'Not paired yet — open the Multiplayer menu in the arcade and connect with a peer.';
-    } else if (status === 'connecting') {
-        el.connLabel.textContent = 'Connecting…';
-        el.banner.hidden = false;
-        el.banner.textContent = 'Connecting to your peer…';
-    } else if (status === 'interrupted') {
-        el.connLabel.textContent = 'Reconnecting…';
-        el.banner.hidden = false;
-        el.banner.textContent = 'Connection interrupted — reconnecting… You can keep typing; messages are delivered when the link recovers.';
-    } else if (status === 'connected') {
-        var names = roster.filter(function (r) { return r.status === 'connected' || r.status === 'interrupted'; }).map(function (r) { return r.name; });
-        if (names.length === 0) el.connLabel.textContent = 'Connected';
-        else if (names.length === 1) el.connLabel.textContent = 'Chatting with ' + names[0];
-        else el.connLabel.textContent = 'Chatting with ' + names.length + ' peers';
-        el.banner.hidden = true;
+    if (status === 'unavailable') el.connLabel.textContent = 'Standalone';
+    else if (status === 'idle') el.connLabel.textContent = 'Not paired';
+    else if (status === 'connecting') el.connLabel.textContent = 'Connecting…';
+    else if (status === 'interrupted') el.connLabel.textContent = 'Reconnecting…';
+    else {
+        var live = roster.filter(function (r) { return r.status === 'connected' || r.status === 'interrupted'; }).length;
+        el.connLabel.textContent = live > 1 ? live + ' peers' : 'Connected';
     }
+    // Status flips change isLive() for indirect peers too — refresh every
+    // presence dot (list rows, member chips, thread subtitle), not just the pill.
+    renderConvList();
+    updateThreadHeader();
     updateComposerForView();
 }
 
@@ -524,13 +537,13 @@ function updateConnUI(status) {
 function onPeerReady(info) {
     var id = sanitizeId(info.deviceId);
     if (!id) return;
-    var firstEver = peers.size === 0 && groups.size === 0;
     var wasKnownLive = knownLiveIds.has(id);
     var p = ensurePeer(id, info.name);
     if (!wasKnownLive) {
         knownLiveIds.add(id);
+        // No auto-open: the conversation surfaces (freshly bumped) at the top
+        // of the list and the user chooses when to enter it.
         pushSystemFor(p, 'Connected — chatting with ' + p.name);
-        if (firstEver || !viewKey) viewKey = peerKey(id);
         resyncGroupsFor(id);
     }
     persist();
@@ -600,7 +613,7 @@ function onPeerMessage(payload, fromDeviceId) {
                 existing.members = members;
                 if (!stillMember) existing.left = true;
                 persist();
-                if (viewKey === groupKey(gsId)) renderAllForView(); else renderTabs();
+                if (viewKey === groupKey(gsId)) renderAllForView(); else renderConvList();
             }
             break;
         }
@@ -675,7 +688,7 @@ function onPeerMessage(payload, fromDeviceId) {
             if (entry) {
                 entry.file.progress = progress;
                 var fcKey = fcGroupId ? groupKey(fcGroupId) : peerKey(fromId);
-                if (viewKey === fcKey) { updateFileRowInMessages(fcThread, chunkId); renderFilesPanelFor(fcThread); }
+                if (viewKey === fcKey) updateFileRowInMessages(fcThread, chunkId);
             }
             break;
         }
@@ -709,7 +722,7 @@ function onPeerMessage(payload, fromDeviceId) {
             }
             persist();
             var fdKey = fdGroupId ? groupKey(fdGroupId) : peerKey(fromId);
-            if (viewKey === fdKey) { updateFileRowInMessages(fdThread, doneId); renderFilesPanelFor(fdThread); }
+            if (viewKey === fdKey) updateFileRowInMessages(fdThread, doneId);
             break;
         }
     }
@@ -762,7 +775,7 @@ function sendFile(file) {
     function fail() {
         entry.file.state = 'failed';
         persist();
-        if (viewKey === t.key) { updateFileRowInMessages(thread, id); renderFilesPanelFor(thread); }
+        if (viewKey === t.key) updateFileRowInMessages(thread, id);
         Arcade.ui.toast('Could not send ' + file.name + ' — connection lost', { kind: 'error' });
     }
 
@@ -793,7 +806,7 @@ function sendFile(file) {
                 entry.file.state = 'done';
                 entry.file.progress = 100;
                 persist();
-                if (viewKey === t.key) { updateFileRowInMessages(thread, id); renderFilesPanelFor(thread); }
+                if (viewKey === t.key) updateFileRowInMessages(thread, id);
                 return;
             }
             var start = seq * RAW_CHUNK_BYTES;
@@ -806,7 +819,7 @@ function sendFile(file) {
             });
             if (active.length === 0) { fail(); return; }
             entry.file.progress = Math.round(((seq + 1) / total) * 100);
-            if (viewKey === t.key) { updateFileRowInMessages(thread, id); renderFilesPanelFor(thread); }
+            if (viewKey === t.key) updateFileRowInMessages(thread, id);
             return sleep(CHUNK_PACE_MS).then(function () { return sendChunk(seq + 1); });
         }
         return sendChunk(0);
@@ -821,17 +834,6 @@ function clearChat() {
     t.obj.pendingReceives.clear();
     t.obj.history = [];
     t.obj.unread = 0;
-    persist();
-    renderAllForView();
-}
-function clearFiles() {
-    var t = currentThread();
-    if (!t) return;
-    t.obj.history.filter(function (m) { return m.kind === 'file'; }).forEach(function (m) {
-        var u = t.obj.blobUrls.get(m.file.id);
-        if (u) { URL.revokeObjectURL(u); t.obj.blobUrls.delete(m.file.id); }
-    });
-    t.obj.history = t.obj.history.filter(function (m) { return m.kind !== 'file'; });
     persist();
     renderAllForView();
 }
@@ -928,6 +930,7 @@ function submitGroupModal() {
             if (m.deviceId === me) return;
             Arcade.peer.send({ t: 'group-sync', groupId: id, name: name, members: memberObjs, rev: 1 }, { to: m.deviceId });
         });
+        showScreen('thread');
         renderAllForView();
     } else {
         var t = currentThread();
@@ -976,6 +979,67 @@ function leaveGroup() {
     renderAllForView();
 }
 
+// ---- thread ⋯ menu (bottom sheet) ----------------------------------------
+// The single management surface for the open conversation: rename, members
+// (groups), clear chat, leave/remove. Destructive rows take a second tap to
+// confirm (window.confirm is a silent no-op in sandboxed frames).
+function threadMenuRows(t) {
+    function row(action, label, danger) {
+        return '<button type="button" class="sheet-row' + (danger ? ' danger' : '') + '" data-action="' + action + '" data-label="' + label + '">' + label + '</button>';
+    }
+    var rows = [row('rename', 'Rename', false)];
+    if (t.kind === 'group') rows.push(row('members', 'Members', false));
+    rows.push(row('clear', 'Clear chat', true));
+    if (t.kind !== 'group') rows.push(row('remove', 'Remove chat', true));
+    else if (t.obj.left) rows.push(row('remove', 'Remove from list', true));
+    else rows.push(row('leave', 'Leave group', true));
+    return rows.join('');
+}
+function openThreadMenu() {
+    var t = currentThread();
+    if (!t) return;
+    threadMenuArmed = null;
+    el.threadMenuTitle.textContent = t.obj.name;
+    el.threadMenuList.innerHTML = threadMenuRows(t);
+    el.threadMenu.hidden = false;
+}
+function closeThreadMenu() { el.threadMenu.hidden = true; threadMenuArmed = null; }
+
+function removePeerConversation(id) {
+    var p = peers.get(id);
+    if (!p) return;
+    revokeBlobUrls(p);
+    peers.delete(id);
+    if (viewKey === peerKey(id)) { viewKey = null; showScreen('list'); }
+    persist();
+    renderConvList();
+}
+function removeGroupConversation(id) {
+    var g = groups.get(id);
+    if (!g) return;
+    if (!g.left) {
+        liveGroupMembers(g).forEach(function (m) { Arcade.peer.send({ t: 'group-leave', groupId: g.id }, { to: m.deviceId }); });
+    }
+    revokeBlobUrls(g);
+    groups.delete(id);
+    if (viewKey === groupKey(id)) { viewKey = null; showScreen('list'); }
+    persist();
+    renderConvList();
+}
+
+function runThreadMenuAction(action) {
+    var t = currentThread();
+    if (!t) return;
+    if (action === 'rename') startRename();
+    else if (action === 'members') openMembersPanel();
+    else if (action === 'clear') clearChat();
+    else if (action === 'leave') leaveGroup();
+    else if (action === 'remove') {
+        if (t.kind === 'group') removeGroupConversation(t.obj.id);
+        else removePeerConversation(t.obj.id);
+    }
+}
+
 // ---- lightbox --------------------------------------------------------
 // Plays/displays media inline instead of only offering a download link —
 // covers every type the Files panel can preview (isPreviewable above).
@@ -1001,27 +1065,45 @@ function closeLightbox() {
     el.lightboxContent.innerHTML = ''; // drop the element so video/audio playback stops
 }
 
-// ---- tab switching ------------------------------------------------------
-function switchSubTab(tab) {
-    var chat = tab === 'chat';
-    el.tabBtnChat.classList.toggle('active', chat);
-    el.tabBtnFiles.classList.toggle('active', !chat);
-    el.tabBtnChat.setAttribute('aria-selected', String(chat));
-    el.tabBtnFiles.setAttribute('aria-selected', String(!chat));
-    el.panelChat.classList.toggle('hidden', !chat);
-    el.panelFiles.classList.toggle('hidden', chat);
-}
-
 // ---- wiring ------------------------------------------------------------
 function wireUI() {
-    el.peerTabs.addEventListener('click', function (e) {
-        var btn = e.target.closest('.peer-tab');
-        if (btn) switchView(btn.getAttribute('data-tab-key'));
+    el.convList.addEventListener('click', function (e) {
+        var row = e.target.closest('.conv-row');
+        if (row) { switchView(row.getAttribute('data-tab-key')); showScreen('thread'); }
     });
-    el.newGroupBtn.addEventListener('click', openCreateGroupModal);
+    el.convList.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var row = e.target.closest('.conv-row');
+        if (!row) return;
+        e.preventDefault();
+        switchView(row.getAttribute('data-tab-key'));
+        showScreen('thread');
+    });
+    el.newChatBtn.addEventListener('click', openCreateGroupModal);
+    el.backBtn.addEventListener('click', function () { showScreen('list'); });
 
-    el.renameBtn.addEventListener('click', startRename);
-    el.membersBtn.addEventListener('click', openMembersPanel);
+    el.menuBtn.addEventListener('click', openThreadMenu);
+    el.threadMenuCancel.addEventListener('click', closeThreadMenu);
+    el.threadMenu.addEventListener('click', function (e) { if (e.target === el.threadMenu) closeThreadMenu(); });
+    el.threadMenuList.addEventListener('click', function (e) {
+        var btn = e.target.closest('.sheet-row');
+        if (!btn) return;
+        var action = btn.getAttribute('data-action');
+        var destructive = action === 'clear' || action === 'leave' || action === 'remove';
+        if (destructive && threadMenuArmed !== action) {
+            // Disarm any previously armed row before arming this one.
+            Array.prototype.forEach.call(el.threadMenuList.querySelectorAll('.sheet-row.confirm-armed'), function (r) {
+                r.classList.remove('confirm-armed');
+                r.textContent = r.getAttribute('data-label');
+            });
+            threadMenuArmed = action;
+            btn.classList.add('confirm-armed');
+            btn.textContent = 'Tap again to confirm';
+            return;
+        }
+        closeThreadMenu();
+        runThreadMenuAction(action);
+    });
 
     el.groupModalSave.addEventListener('click', submitGroupModal);
     el.groupModalCancel.addEventListener('click', closeGroupModal);
@@ -1029,9 +1111,6 @@ function wireUI() {
 
     el.membersModalClose.addEventListener('click', closeMembersModal);
     el.membersModal.addEventListener('click', function (e) { if (e.target === el.membersModal) closeMembersModal(); });
-
-    el.tabBtnChat.addEventListener('click', function () { switchSubTab('chat'); });
-    el.tabBtnFiles.addEventListener('click', function () { switchSubTab('files'); });
 
     // Plain click/keydown, not a <form submit> — sandboxed iframes without
     // `allow-forms` silently block form submission (a native default action,
@@ -1076,34 +1155,22 @@ function wireUI() {
             }
         });
     }
-    armToConfirm(el.clearChatBtn, function () { var t = currentThread(); return !!t && t.obj.history.length > 0; }, clearChat);
-    armToConfirm(el.clearFilesBtn, function () { var t = currentThread(); return !!t && t.obj.history.some(function (m) { return m.kind === 'file'; }); }, clearFiles);
     armToConfirm(el.membersModalLeave, function () { return true; }, leaveGroup);
 
+    // Inline file bubbles are the only file surface — a click previews any
+    // previewable type (images via their thumb, video/audio/pdf via the card).
     el.messages.addEventListener('click', function (e) {
-        var thumb = e.target.closest('.file-thumb');
-        if (thumb) openMedia('image/*', thumb.src, thumb.alt);
-    });
-    el.filesList.addEventListener('click', function (e) {
-        var btn = e.target.closest('[data-remove]');
-        if (btn) {
-            var t = currentThread();
-            if (!t) return;
-            var fid = btn.getAttribute('data-remove');
-            var u = t.obj.blobUrls.get(fid);
-            if (u) { URL.revokeObjectURL(u); t.obj.blobUrls.delete(fid); }
-            t.obj.history = t.obj.history.filter(function (m) { return !(m.kind === 'file' && m.file.id === fid); });
-            persist();
-            renderAllForView();
-            return;
-        }
         if (e.target.closest('a[download]')) return; // let the download proceed as-is
-        var row = e.target.closest('.file-row.previewable');
-        if (!row) return;
+        var thumb = e.target.closest('.file-thumb');
+        if (thumb) { openMedia('image/*', thumb.src, thumb.alt); return; }
+        var card = e.target.closest('.file-card');
+        if (!card) return;
         var t = currentThread();
         if (!t) return;
-        var url = t.obj.blobUrls.get(row.getAttribute('data-file-id'));
-        if (url) openMedia(row.getAttribute('data-mime'), url, row.getAttribute('data-file-name') || '');
+        var fid = card.getAttribute('data-file-id');
+        var entry = t.obj.history.find(function (m) { return m.kind === 'file' && m.file.id === fid; });
+        var url = t.obj.blobUrls.get(fid);
+        if (entry && url && isPreviewable(entry.file.mime)) openMedia(entry.file.mime, url, entry.file.name);
     });
     el.lightboxClose.addEventListener('click', closeLightbox);
     el.lightbox.addEventListener('click', function (e) { if (e.target === el.lightbox) closeLightbox(); });
@@ -1113,9 +1180,9 @@ function init() {
     if (Arcade.state && Arcade.state.migrate) Arcade.state.migrate('v1', function () {}); // no legacy keys to move; satisfies the migration sentinel
     peers = loadPeers();
     groups = loadGroups();
-    var first = orderedThreads()[0];
-    viewKey = first ? first.key : null;
+    viewKey = null; // list-first: nothing is "open" until the user taps a conversation
     wireUI();
+    showScreen('list');
     renderAllForView();
 
     roster = Arcade.peer.peers();
@@ -1147,7 +1214,10 @@ function init() {
                 map.set(t.id, t);
             });
             var stillThere = viewKey && (viewKey.charAt(0) === 'p' ? peers.has(viewKey.slice(2)) : groups.has(viewKey.slice(2)));
-            if (!stillThere) { var f = orderedThreads()[0]; viewKey = f ? f.key : null; }
+            if (!stillThere) {
+                viewKey = null;
+                if (screenMode === 'thread') showScreen('list');
+            }
             renderAllForView();
         });
     }
