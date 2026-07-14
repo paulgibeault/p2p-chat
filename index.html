@@ -33,8 +33,15 @@
 
   <div class="banner" id="banner" hidden></div>
 
-  <nav class="peer-tabs" id="peerTabs" role="tablist" aria-label="Known peers" hidden></nav>
-  <p class="empty-hint" id="peersEmptyHint" hidden>Pair with a peer from the arcade's Multiplayer menu to start a chat. Every peer you've talked to gets its own tab here.</p>
+  <nav class="peer-tabs" id="peerTabs" role="tablist" aria-label="Chats" hidden></nav>
+  <button type="button" class="new-group-btn" id="newGroupBtn" title="New group chat" aria-label="New group chat" hidden>+ Group</button>
+  <p class="empty-hint" id="peersEmptyHint" hidden>Pair with a peer from the arcade's Multiplayer menu to start a chat. Every peer you've talked to gets its own tab here — rename tabs or start a group once you know a few people.</p>
+
+  <div class="thread-header" id="threadHeader" hidden>
+    <span class="thread-name" id="threadName"></span>
+    <button type="button" class="icon-btn" id="renameBtn" title="Rename" aria-label="Rename this chat">✎</button>
+    <button type="button" class="icon-btn" id="membersBtn" title="Members" aria-label="Group members" hidden>👥</button>
+  </div>
 
   <nav class="tabs" id="subTabs" role="tablist" hidden>
     <button class="tab active" id="tabBtnChat" data-tab="chat" role="tab" aria-selected="true">Chat</button>
@@ -76,6 +83,32 @@
 <div class="lightbox" id="lightbox" hidden>
   <button class="lightbox-close" id="lightboxClose" type="button" aria-label="Close">✕</button>
   <div class="lightbox-content" id="lightboxContent"></div>
+</div>
+
+<div class="modal-overlay" id="groupModal" hidden>
+  <div class="modal-card">
+    <h2 class="modal-title" id="groupModalTitle">New group chat</h2>
+    <div class="modal-row" id="groupNameRow">
+      <input type="text" id="groupNameInput" placeholder="Group name" maxlength="60" autocomplete="off">
+    </div>
+    <p class="modal-hint">Pick who's in this group. Members are notified next time they're connected.</p>
+    <div class="member-list" id="groupMemberList"></div>
+    <div class="modal-actions">
+      <button type="button" class="link-btn" id="groupModalCancel">Cancel</button>
+      <button type="button" class="send-btn" id="groupModalSave">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="membersModal" hidden>
+  <div class="modal-card">
+    <h2 class="modal-title">Group members</h2>
+    <div class="member-list" id="membersModalList"></div>
+    <div class="modal-actions">
+      <button type="button" class="link-btn" id="membersModalLeave">Leave group</button>
+      <button type="button" class="send-btn" id="membersModalClose">Close</button>
+    </div>
+  </div>
 </div>
 
 <script src="app.js"></script>
