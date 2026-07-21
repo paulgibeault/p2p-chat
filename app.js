@@ -25,6 +25,42 @@ var escapeHtml = Arcade.html.escape;
 function sanitizeId(id) {
     return typeof id === 'string' ? id.replace(/[^\w-]/g, '_').slice(0, 128) : '';
 }
+// ---- audio (Arcade.audio SFX) ------------------------------------------
+// Soft, notification-like sine blips for chat events. Volume + the global
+// mute are launcher-owned (Arcade.settings.audioVolume) — this game adds NO
+// in-game volume/mute UI. One registration site (registerSfxCues, called
+// once from init) and one guarded play wrapper (sfx). Every play-site goes
+// through sfx() so the feature-detect lives in exactly one place.
+function sfx(name, opts) {
+    if (window.Arcade && Arcade.audio) Arcade.audio.play(name, opts);
+}
+function registerSfxCues() {
+    if (!(window.Arcade && Arcade.audio)) return;
+    // dur <= 0.25s, gain <= 0.35 (conservative; a human ear pass is owed).
+    Arcade.audio.cue('message-received', [
+        { type: 'sine', freq: 660, dur: 0.09, gain: 0.28 },
+        { type: 'sine', freq: 880, dur: 0.11, gain: 0.28 },
+    ]);
+    Arcade.audio.cue('message-sent', { type: 'sine', freq: 520, dur: 0.07, gain: 0.15 });
+    Arcade.audio.cue('peer-joined', [
+        { type: 'sine', freq: 523, dur: 0.10, gain: 0.30 },
+        { type: 'sine', freq: 784, dur: 0.12, gain: 0.30 },
+    ]);
+    Arcade.audio.cue('peer-left', [
+        { type: 'sine', freq: 587, dur: 0.10, gain: 0.26 },
+        { type: 'sine', freq: 392, dur: 0.13, gain: 0.26 },
+    ]);
+    Arcade.audio.cue('transfer-complete', [
+        { type: 'sine', freq: 659, dur: 0.08, gain: 0.28 },
+        { type: 'sine', freq: 880, dur: 0.08, gain: 0.28 },
+        { type: 'sine', freq: 1047, dur: 0.12, gain: 0.28 },
+    ]);
+    Arcade.audio.cue('error', [
+        { type: 'triangle', freq: 300, dur: 0.10, gain: 0.30 },
+        { type: 'triangle', freq: 200, dur: 0.15, gain: 0.30 },
+    ]);
+}
+
 function formatBytes(n) {
     if (n < 1024) return n + ' B';
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
@@ -544,6 +580,7 @@ function onPeerReady(info) {
         // No auto-open: the conversation surfaces (freshly bumped) at the top
         // of the list and the user chooses when to enter it.
         pushSystemFor(p, 'Connected — chatting with ' + p.name);
+        sfx('peer-joined');
         resyncGroupsFor(id);
     }
     persist();
@@ -563,6 +600,7 @@ function onPeersChange(list) {
         var p = peers.get(id);
         if (!p) return;
         pushSystemFor(p, p.name + ' disconnected');
+        sfx('peer-left');
         p.pendingReceives.clear();
         p.history.forEach(function (m) {
             if (m.kind === 'file' && (m.file.state === 'sending' || m.file.state === 'receiving')) m.file.state = 'failed';
@@ -646,6 +684,12 @@ function onPeerMessage(payload, fromDeviceId) {
                 var mp = ensurePeer(fromId);
                 commitEntryFor(mp, { id: msgId, dir: 'in', kind: 'text', text: text, ts: ts });
             }
+            // Receive-side only: onPeerMessage handles inbound frames, and both
+            // branches above committed an incoming (dir:'in') message from a
+            // peer. Own sends never echo back through here, so this never fires
+            // on your own outbound text. Early `break`s above (non-member /
+            // left group) skip this, so it fires only on a real delivery.
+            sfx('message-received');
             break;
         }
 
@@ -707,6 +751,7 @@ function onPeerMessage(payload, fromDeviceId) {
             if (!e) break;
             if (p.got !== p.total || p.chunks.indexOf(undefined) !== -1) {
                 e.file.state = 'failed';
+                sfx('error');
                 Arcade.ui.toast('File transfer incomplete: ' + e.file.name, { kind: 'error' });
             } else {
                 var totalLen = 0, byteParts = p.chunks.map(function (c) { var b = base64ToBytes(c); totalLen += b.length; return b; });
@@ -719,6 +764,7 @@ function onPeerMessage(payload, fromDeviceId) {
                 e.file.state = 'done';
                 e.file.progress = 100;
                 e.file.available = true;
+                sfx('transfer-complete');
             }
             persist();
             var fdKey = fdGroupId ? groupKey(fdGroupId) : peerKey(fromId);
@@ -749,6 +795,7 @@ function sendText(text) {
     var entry = { id: id, dir: 'out', kind: 'text', text: text, ts: ts };
     if (!okAny) entry.failed = true;
     commitEntryFor(t.obj, entry);
+    if (okAny) sfx('message-sent'); else sfx('error');
 }
 
 function sendFile(file) {
@@ -756,8 +803,9 @@ function sendFile(file) {
     if (!t) return Promise.resolve();
     var targets = targetsFor(t);
     if (targets.length === 0) return Promise.resolve();
-    if (file.size === 0) { Arcade.ui.toast("Can't send an empty file", { kind: 'error' }); return Promise.resolve(); }
+    if (file.size === 0) { sfx('error'); Arcade.ui.toast("Can't send an empty file", { kind: 'error' }); return Promise.resolve(); }
     if (file.size > MAX_FILE_BYTES) {
+        sfx('error');
         Arcade.ui.toast('File too large (' + formatBytes(file.size) + ') — demo limit is ' + formatBytes(MAX_FILE_BYTES), { kind: 'error' });
         return Promise.resolve();
     }
@@ -776,6 +824,7 @@ function sendFile(file) {
         entry.file.state = 'failed';
         persist();
         if (viewKey === t.key) updateFileRowInMessages(thread, id);
+        sfx('error');
         Arcade.ui.toast('Could not send ' + file.name + ' — connection lost', { kind: 'error' });
     }
 
@@ -807,6 +856,7 @@ function sendFile(file) {
                 entry.file.progress = 100;
                 persist();
                 if (viewKey === t.key) updateFileRowInMessages(thread, id);
+                sfx('transfer-complete');
                 return;
             }
             var start = seq * RAW_CHUNK_BYTES;
@@ -1178,6 +1228,7 @@ function wireUI() {
 
 function init() {
     if (Arcade.state && Arcade.state.migrate) Arcade.state.migrate('v1', function () {}); // no legacy keys to move; satisfies the migration sentinel
+    registerSfxCues(); // A1: one audio registration site, at boot
     peers = loadPeers();
     groups = loadGroups();
     viewKey = null; // list-first: nothing is "open" until the user taps a conversation
