@@ -1,0 +1,9 @@
+{
+  "name": "p2p-chat",
+  "pack": "js/soundpack.js",
+  "auditions": {
+    "short": "audio/audition-short.js"
+  },
+  "out": "audio/out",
+  "sampleRate": 48000
+}
