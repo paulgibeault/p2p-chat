@@ -3,3 +3,6 @@
 .go.pid
 .go.port
 arcade-sdk.js
+
+# sound-pack renders — regenerable, and large
+audio/out/

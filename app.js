@@ -27,24 +27,20 @@ function sanitizeId(id) {
 }
 // ---- audio (Arcade.audio SFX) ------------------------------------------
 // Sound identity: SONAR. The whole point of this app is the direct
-// device-to-device link — peers appearing and disappearing off a local
-// radar with no server in between — so the palette is a sonar/radio one
-// rather than the interchangeable two-note chimes every messaging app
-// ships. Three ideas carry it:
-//   * Presence is a contact on the scope. A peer arriving is a high ping
-//     with one quiet echo returning: something out there answered. A peer
-//     leaving is that same ping sliding down and fading below the noise
-//     floor, with no echo — nothing answers.
-//   * Messages are soft physical pops (a click of noise for the attack, a
-//     short pitched body under it), not doorbells. Received is the higher,
-//     louder one — it moved toward you. Sent is its quieter, lower sibling
-//     — it moved away. Received is deliberately the quietest thing in the
-//     palette that still registers: it fires often and lands while someone
-//     is mid-sentence reading, so startling is a worse failure than faint.
-//   * transfer-complete keeps its rising triad and error its low
-//     descending buzz — those gestures were already right. They are only
-//     retuned to sit in the same register and envelope family as the
-//     pings, so everything sounds like one radio.
+// device-to-device link — peers appearing and disappearing off a local radar
+// with no server in between — so the palette is a sonar one rather than the
+// interchangeable two-note chimes every messaging app ships.
+//
+// The design itself lives in js/soundpack.js, where the convolution room does
+// the work the old hand-scheduled echo was standing in for: the room IS the
+// water, and the tail IS distance. Two rules carry the whole pack —
+//   * an ECHO REPEATS THE PITCH; a DEPARTURE CHANGES IT. That is the only
+//     thing separating peer-joined from peer-left, which are otherwise the
+//     same gesture in the same voice.
+//   * a RETURN HAS NO CONTACT CLICK — water eats the transient first.
+// That pack is rendered to an audition WAV and approved by ear before it
+// ships; do not retune it from this file.
+//
 // Volume + the global mute are launcher-owned (Arcade.settings.audioVolume)
 // — this game adds NO in-game volume/mute UI. One registration site
 // (registerSfxCues, called once from init) and one guarded play wrapper
@@ -53,43 +49,78 @@ function sanitizeId(id) {
 function sfx(name, opts) {
     if (window.Arcade && Arcade.audio) Arcade.audio.play(name, opts);
 }
+
+// The gestures the pack is built out of. A cached older SDK or element library
+// has graph() but not necessarily these, and a missing element would throw
+// inside a cue at play time — a cue that half-plays is worse than the fallback
+// profile, so the graph path is gated on the pack's actual dependencies rather
+// than on a version number.
+const SFX_NEEDED_ELEMENTS = ['strike', 'body', 'droplet', 'creak', 'thump', 'cents', 'between'];
+let sfxGraphMode = false;
+
 function registerSfxCues() {
     if (!(window.Arcade && Arcade.audio)) return;
-    // Envelopes stay conservative: per-voice dur <= 0.25s, gain <= 0.35.
-    // NOTE: every cue below except 'peer-left' is an ARRAY, and array cues
-    // ignore per-play overrides — play(name, {freq}) merges onto
-    // single-object cues only. No call site passes overrides today; if one
-    // ever needs to, that cue has to stay (or go back to) a single object.
-    //
-    // Sonar contact: the ping, then one quiet echo returning. The echo
-    // starts 0.15s after the ping starts — 0.03s after it ends — so the
-    // pair reads as one gesture with a tail instead of two separate events.
-    Arcade.audio.cue('peer-joined', [
+    const a = Arcade.audio;
+    const p = window.ArcadeSoundPack || null;
+    const el = (typeof a.el === 'function') ? a.el() : null;
+    const graphable =
+        !!p &&
+        typeof a.graph === 'function' &&
+        typeof a.room === 'function' &&
+        el !== null &&
+        SFX_NEEDED_ELEMENTS.every((n) => typeof el[n] === 'function');
+
+    if (graphable) {
+        // One room for the whole app: the water everything is heard in.
+        a.room(p.ROOM);
+        Object.keys(p.CUES).forEach((name) => {
+            a.graph(name, p.CUES[name], { send: p.SENDS[name] });
+        });
+        sfxGraphMode = true;
+        return;
+    }
+    // Stale cached SDK, or standalone without /arcade-audio.js. Expected, not
+    // a bug — no console noise.
+    registerSpecCues(a);
+}
+
+// ---- fallback: the archived chiptune profile ---------------------------
+// Frozen. Keep these bodies in sync with audio/chiptune-archive.mjs rather
+// than editing them here — the profile was tuned as a whole, and the comments
+// describe those sonar-SHAPED TONES, not the water the graph path now plays.
+//
+// NOTE: every cue below except 'peer-left' is an ARRAY, and array cues ignore
+// per-play overrides. No call site passes overrides today.
+function registerSpecCues(a) {
+    // Sonar contact: the ping, then one quiet echo returning. The echo starts
+    // 0.15s after the ping starts — 0.03s after it ends — so the pair reads as
+    // one gesture with a tail instead of two separate events.
+    a.cue('peer-joined', [
         { type: 'sine', freq: 1175, toFreq: 1100, dur: 0.12, gain: 0.24, attack: 0.002, release: 0.11 },
         { type: 'sine', freq: 1175, toFreq: 1100, dur: 0.12, gain: 0.07, attack: 0.002, release: 0.11, delay: 0.15 },
     ]);
     // The same ping sinking below the noise floor, and nothing echoes back.
-    Arcade.audio.cue('peer-left', { type: 'sine', freq: 1100, toFreq: 700, dur: 0.25, gain: 0.18, attack: 0.005, release: 0.22 });
+    a.cue('peer-left', { type: 'sine', freq: 1100, toFreq: 700, dur: 0.25, gain: 0.18, attack: 0.005, release: 0.22 });
     // Soft pop: noise transient and pitched body struck together (delay 0).
-    Arcade.audio.cue('message-received', [
+    a.cue('message-received', [
         { type: 'noise', dur: 0.012, gain: 0.05, attack: 0.001, release: 0.011, delay: 0 },
         { type: 'sine', freq: 740, dur: 0.07, gain: 0.16, attack: 0.003, release: 0.065, delay: 0 },
     ]);
     // Same pop, lower and quieter — it left you rather than arrived.
-    Arcade.audio.cue('message-sent', [
+    a.cue('message-sent', [
         { type: 'noise', dur: 0.010, gain: 0.03, attack: 0.001, release: 0.009, delay: 0 },
         { type: 'sine', freq: 587, dur: 0.06, gain: 0.09, attack: 0.003, release: 0.055, delay: 0 },
     ]);
-    // Rising triad, unchanged in shape, landing on the ping's own pitch so
-    // a finished transfer sounds like the link itself answering.
-    Arcade.audio.cue('transfer-complete', [
+    // Rising triad, landing on the ping's own pitch so a finished transfer
+    // sounds like the link itself answering.
+    a.cue('transfer-complete', [
         { type: 'sine', freq: 659, dur: 0.07, gain: 0.20, attack: 0.002, release: 0.06 },
         { type: 'sine', freq: 880, dur: 0.07, gain: 0.20, attack: 0.002, release: 0.06 },
         { type: 'sine', freq: 1100, toFreq: 1175, dur: 0.13, gain: 0.22, attack: 0.002, release: 0.12 },
     ]);
-    // Low descending buzz, same two-step shape, now enveloped and sagging
-    // in pitch like a signal losing its lock.
-    Arcade.audio.cue('error', [
+    // Low descending buzz, enveloped and sagging in pitch like a signal
+    // losing its lock.
+    a.cue('error', [
         { type: 'triangle', freq: 300, toFreq: 280, dur: 0.10, gain: 0.26, attack: 0.004, release: 0.05 },
         { type: 'triangle', freq: 220, toFreq: 180, dur: 0.18, gain: 0.24, attack: 0.004, release: 0.16 },
     ]);
