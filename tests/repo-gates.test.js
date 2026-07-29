@@ -64,7 +64,9 @@ test("manifest.json is coherent", { skip: !fs.existsSync(path.join(ROOT, "manife
     assert.ok(fs.existsSync(path.join(ROOT, clean)),
       `manifest icon missing: ${icon.src}`);
   }
-  if (man.start_url) {
+  // A root-absolute start_url ("/moon-lit/") is the deployed arcade path, not
+  // a file in this repo — only a repo-relative one names a file we can check.
+  if (man.start_url && !man.start_url.startsWith("/")) {
     const clean = man.start_url.replace(/^\.\//, "").split(/[?#]/)[0] || "index.html";
     assert.ok(fs.existsSync(path.join(ROOT, clean)),
       `manifest start_url target missing: ${man.start_url}`);
