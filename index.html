@@ -5,8 +5,9 @@
 <!-- Sound. The element library is the SDK's optional audio companion, taken
      from the EVERGREEN path to match the evergreen /arcade-sdk.js above so the
      two move majors together. Off the launcher origin it simply 404s and
-     app.js falls back to the archived chiptune profile, which is why it loads
-     before the pack rather than being required by it. -->
+     app.js registers nothing and the app plays silence, by design — no
+     fallback profile. It still loads before the pack rather than being
+     required by it. -->
 <script src="/arcade-audio.js"></script>
 <script src="js/soundpack.js"></script>
 <script>Arcade.init({ gameId: 'p2p-chat' });</script>
