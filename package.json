@@ -6,6 +6,6 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test 'tests/*.test.js'"
+    "test": "node tools/verify-artifact.mjs && node --test 'tests/*.test.js'"
   }
 }
