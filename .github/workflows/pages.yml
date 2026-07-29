@@ -1,0 +1,26 @@
+# Thin caller for the fleet CI/CD standard. The pipeline lives in the
+# launcher repo (fleet-ci.yml); change it there and every app follows.
+# See GAME_INTEGRATION.md §13a.
+name: CI & Deploy Pages
+
+on:
+  push:
+    # master is this repo's default branch today; main is listed so the
+    # trigger survives the rename to main without another edit.
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Per-ref, so a PR run never cancels main's deploy.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fleet:
+    uses: paulgibeault/paulgibeault.github.io/.github/workflows/fleet-ci.yml@main

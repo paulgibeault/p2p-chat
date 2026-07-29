@@ -6,3 +6,6 @@ arcade-sdk.js
 
 # sound-pack renders — regenerable, and large
 audio/out/
+
+# Deploy artifact — staged by CI, never committed.
+dist/
