@@ -53,8 +53,8 @@
 // it fires often, and it lands while someone is mid-sentence reading, so
 // startling them is a worse failure than being faint.
 //
-// The archived chiptune profile is kept verbatim in audio/chiptune-archive.mjs
-// and is what a player on a stale service-worker cache still hears.
+// The pre-graph chiptune profile is kept verbatim in audio/chiptune-archive.mjs
+// as provenance. Nothing loads it: fallbacks are retired fleet-wide.
 
 (function (global) {
   'use strict';
@@ -62,10 +62,10 @@
 
   // Every cue here is built from the element library's gestures, so with the
   // library absent — a stale service-worker cache, or running standalone off
-  // the launcher origin — there is nothing registrable and the game's audio
-  // module takes its fallback path. Bail before dereferencing S: this file is
-  // a plain script, and a throw here would surface as a page error even though
-  // the fallback itself works. Also covers an OLDER library that predates
+  // the launcher origin — there is nothing registrable and the game
+  // plays silence — by design; fallbacks are retired fleet-wide. Bail before
+  // dereferencing S: this file is a plain script, and a throw here would
+  // surface as a page error even though the silence itself is intended. Also covers an OLDER library that predates
   // registerPack, which is the same stale-cache scenario one version on.
   if (!S || typeof S.registerPack !== 'function') return;
 

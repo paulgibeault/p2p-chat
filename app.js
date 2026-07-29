@@ -45,19 +45,26 @@ function sanitizeId(id) {
 // — this game adds NO in-game volume/mute UI. One registration site
 // (registerSfxCues, called once from init) and one guarded play wrapper
 // (sfx). Every play-site goes through sfx() so the feature-detect lives in
-// exactly one place.
+// exactly one place. play() on a name nothing registered is a silent no-op
+// in the SDK — that is what makes the register-nothing branch below safe.
 function sfx(name, opts) {
     if (window.Arcade && Arcade.audio) Arcade.audio.play(name, opts);
 }
 
 // The gestures the pack is built out of. A cached older SDK or element library
 // has graph() but not necessarily these, and a missing element would throw
-// inside a cue at play time — a cue that half-plays is worse than the fallback
-// profile, so the graph path is gated on the pack's actual dependencies rather
+// inside a cue at play time — a cue that half-plays is worse than no cue at
+// all, so the graph path is gated on the pack's actual dependencies rather
 // than on a version number.
 const SFX_NEEDED_ELEMENTS = ['strike', 'body', 'droplet', 'creak', 'thump', 'cents', 'between'];
-let sfxGraphMode = false;
 
+// The pack IS the sound — there is no fallback profile. Fleet decision
+// 2026-07-28: chiptune is an aesthetic a game adopts as its identity, not a
+// degraded mode a graph-pack game drops into. If the gate fails (stale cached
+// SDK, or standalone without /arcade-audio.js) we register nothing and the
+// app plays silence — expected and deliberate, not a bug, no console noise.
+// The retired chiptune profile survives as provenance in
+// audio/chiptune-archive.mjs; do not resurrect it here.
 function registerSfxCues() {
     if (!(window.Arcade && Arcade.audio)) return;
     const a = Arcade.audio;
@@ -69,61 +76,13 @@ function registerSfxCues() {
         typeof a.room === 'function' &&
         el !== null &&
         SFX_NEEDED_ELEMENTS.every((n) => typeof el[n] === 'function');
+    if (!graphable) return;
 
-    if (graphable) {
-        // One room for the whole app: the water everything is heard in.
-        a.room(p.ROOM);
-        Object.keys(p.CUES).forEach((name) => {
-            a.graph(name, p.CUES[name], { send: p.SENDS[name] });
-        });
-        sfxGraphMode = true;
-        return;
-    }
-    // Stale cached SDK, or standalone without /arcade-audio.js. Expected, not
-    // a bug — no console noise.
-    registerSpecCues(a);
-}
-
-// ---- fallback: the archived chiptune profile ---------------------------
-// Frozen. Keep these bodies in sync with audio/chiptune-archive.mjs rather
-// than editing them here — the profile was tuned as a whole, and the comments
-// describe those sonar-SHAPED TONES, not the water the graph path now plays.
-//
-// NOTE: every cue below except 'peer-left' is an ARRAY, and array cues ignore
-// per-play overrides. No call site passes overrides today.
-function registerSpecCues(a) {
-    // Sonar contact: the ping, then one quiet echo returning. The echo starts
-    // 0.15s after the ping starts — 0.03s after it ends — so the pair reads as
-    // one gesture with a tail instead of two separate events.
-    a.cue('peer-joined', [
-        { type: 'sine', freq: 1175, toFreq: 1100, dur: 0.12, gain: 0.24, attack: 0.002, release: 0.11 },
-        { type: 'sine', freq: 1175, toFreq: 1100, dur: 0.12, gain: 0.07, attack: 0.002, release: 0.11, delay: 0.15 },
-    ]);
-    // The same ping sinking below the noise floor, and nothing echoes back.
-    a.cue('peer-left', { type: 'sine', freq: 1100, toFreq: 700, dur: 0.25, gain: 0.18, attack: 0.005, release: 0.22 });
-    // Soft pop: noise transient and pitched body struck together (delay 0).
-    a.cue('message-received', [
-        { type: 'noise', dur: 0.012, gain: 0.05, attack: 0.001, release: 0.011, delay: 0 },
-        { type: 'sine', freq: 740, dur: 0.07, gain: 0.16, attack: 0.003, release: 0.065, delay: 0 },
-    ]);
-    // Same pop, lower and quieter — it left you rather than arrived.
-    a.cue('message-sent', [
-        { type: 'noise', dur: 0.010, gain: 0.03, attack: 0.001, release: 0.009, delay: 0 },
-        { type: 'sine', freq: 587, dur: 0.06, gain: 0.09, attack: 0.003, release: 0.055, delay: 0 },
-    ]);
-    // Rising triad, landing on the ping's own pitch so a finished transfer
-    // sounds like the link itself answering.
-    a.cue('transfer-complete', [
-        { type: 'sine', freq: 659, dur: 0.07, gain: 0.20, attack: 0.002, release: 0.06 },
-        { type: 'sine', freq: 880, dur: 0.07, gain: 0.20, attack: 0.002, release: 0.06 },
-        { type: 'sine', freq: 1100, toFreq: 1175, dur: 0.13, gain: 0.22, attack: 0.002, release: 0.12 },
-    ]);
-    // Low descending buzz, enveloped and sagging in pitch like a signal
-    // losing its lock.
-    a.cue('error', [
-        { type: 'triangle', freq: 300, toFreq: 280, dur: 0.10, gain: 0.26, attack: 0.004, release: 0.05 },
-        { type: 'triangle', freq: 220, toFreq: 180, dur: 0.18, gain: 0.24, attack: 0.004, release: 0.16 },
-    ]);
+    // One room for the whole app: the water everything is heard in.
+    a.room(p.ROOM);
+    Object.keys(p.CUES).forEach((name) => {
+        a.graph(name, p.CUES[name], { send: p.SENDS[name] });
+    });
 }
 
 function formatBytes(n) {
