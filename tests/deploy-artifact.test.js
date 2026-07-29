@@ -50,7 +50,7 @@ test("every precached file is published", () => {
 test("manifest icons and relative start_url are published", { skip: !fs.existsSync(path.join(ROOT, "manifest.json")) }, () => {
   const man = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   const wanted = (man.icons || []).map((i) => i.src);
-  // A root-absolute start_url ("/p2p-chat/") is the deployed arcade path, not
+  // A root-absolute start_url ("/<gameId>/") is the deployed arcade path, not
   // a file this repo publishes.
   if (man.start_url && !man.start_url.startsWith("/")) wanted.push(man.start_url);
   const missing = wanted
