@@ -135,7 +135,6 @@ var currentStatus = null; // overall Arcade.peer.status() — session-wide trans
 var pausedSends = [];     // resolvers for sendChunk() calls parked while status === 'interrupted'
 var renaming = false;     // guards against double-committing the inline rename input
 var screenMode = 'list';  // 'list' (conversation list, the home screen) | 'thread' (full-page chat)
-var threadMenuArmed = null; // destructive ⋯-sheet action awaiting its confirm tap
 
 // ---- DOM refs -------------------------------------------------------------
 var el = {
@@ -288,6 +287,67 @@ function resyncGroupsFor(deviceId) {
         if (!g.members.some(function (m) { return m.deviceId === deviceId; })) return;
         Arcade.peer.send({ t: 'group-sync', groupId: g.id, name: g.name, members: g.members, rev: g.rev }, { to: deviceId });
     });
+}
+
+// ---- Arcade.configs — group hand-off --------------------------------------
+// A group definition travels as a config payload: a share code / deep link
+// (configs.share → the launcher's share sheet when framed, Arcade.ui.share
+// with the raw code standalone) or a launcher-mediated push to a linked
+// device (configs.send → the launcher shows a device picker). The receiving
+// p2p-chat ingests it in onGroupConfig below.
+function groupConfigData(g) {
+    return {
+        id: g.id, name: g.name, creatorId: g.creatorId, rev: g.rev,
+        members: g.members.map(function (m) { return { deviceId: m.deviceId, name: m.name }; })
+    };
+}
+function shareGroupConfig(g) {
+    Arcade.configs.share('group', groupConfigData(g)).then(function (r) {
+        if (r.ok && r.url) return; // framed: the launcher already opened its share sheet
+        if (r.ok && r.code) {
+            // Standalone: no launcher to build a deep link — hand the raw
+            // code to the OS share sheet (ui.share falls back to placing it
+            // on the clipboard and resolving 'copied').
+            return Arcade.ui.share({ title: 'Join "' + g.name + '" on p2p-chat', text: r.code })
+                .then(function (how) { if (how === 'copied') Arcade.ui.toast('Share code copied'); });
+        }
+        sfx('error');
+        Arcade.ui.toast('Could not create a share code', { kind: 'error' });
+    });
+}
+function sendGroupConfig(g) {
+    Arcade.configs.send('group', groupConfigData(g)).then(function (r) {
+        if (r.ok && r.sent) Arcade.ui.toast('Group sent');
+        else if (!r.ok) Arcade.ui.toast('Sending to a device needs the launcher', { kind: 'error' });
+        // ok:true, sent:false = the user cancelled the picker — stay quiet.
+    });
+}
+// Inbound config data is HOSTILE (see the SDK's configs doc): every field is
+// re-validated with the same discipline as a group-sync frame. Unlike
+// group-sync there is no authenticated sender here, so d.creatorId is taken
+// at face value — a share code is an out-of-band introduction and whoever
+// handed it over is vouching for it; the worst a crafted code yields is a
+// junk group row the user can remove, while recording the REAL creator's id
+// is what lets that creator's authentic group-sync frames reconcile later.
+function onGroupConfig(cfg) {
+    var d = cfg && cfg.data;
+    if (!d || typeof d !== 'object') return;
+    var id = sanitizeId(d.id);
+    var creatorId = sanitizeId(d.creatorId);
+    if (!id || !creatorId) return;
+    var members = Array.isArray(d.members) ? d.members
+        .filter(function (m) { return m && sanitizeId(m.deviceId); })
+        .map(function (m) { return { deviceId: sanitizeId(m.deviceId), name: (typeof m.name === 'string' ? m.name.slice(0, 60) : 'Peer') }; }) : [];
+    if (!members.length) return;
+    var existing = groups.get(id);
+    if (existing) { Arcade.ui.toast('Group "' + existing.name + '" is already here'); return; }
+    var name = typeof d.name === 'string' ? d.name.slice(0, 60) : 'Group chat';
+    var g = ensureGroup(id, name, creatorId, members, typeof d.rev === 'number' ? d.rev : 0);
+    g.lastActivity = Date.now();
+    persist();
+    renderConvList();
+    sfx('peer-joined'); // a group arriving is a social arrival — existing cue, no new sound
+    Arcade.ui.toast('Added group "' + g.name + '"');
 }
 
 // ---- persistence ----------------------------------------------------------
@@ -1055,14 +1115,18 @@ function leaveGroup() {
 
 // ---- thread ⋯ menu (bottom sheet) ----------------------------------------
 // The single management surface for the open conversation: rename, members
-// (groups), clear chat, leave/remove. Destructive rows take a second tap to
-// confirm (window.confirm is a silent no-op in sandboxed frames).
+// and share/send (groups), clear chat, leave/remove. Destructive rows go
+// through Arcade.ui.confirm (see the click handler in wireUI).
 function threadMenuRows(t) {
     function row(action, label, danger) {
         return '<button type="button" class="sheet-row' + (danger ? ' danger' : '') + '" data-action="' + action + '" data-label="' + label + '">' + label + '</button>';
     }
     var rows = [row('rename', 'Rename', false)];
     if (t.kind === 'group') rows.push(row('members', 'Members', false));
+    if (t.kind === 'group' && !t.obj.left) {
+        rows.push(row('sharegroup', 'Share group', false));
+        rows.push(row('sendgroup', 'Send to a device', false));
+    }
     rows.push(row('clear', 'Clear chat', true));
     if (t.kind !== 'group') rows.push(row('remove', 'Remove chat', true));
     else if (t.obj.left) rows.push(row('remove', 'Remove from list', true));
@@ -1072,12 +1136,11 @@ function threadMenuRows(t) {
 function openThreadMenu() {
     var t = currentThread();
     if (!t) return;
-    threadMenuArmed = null;
     el.threadMenuTitle.textContent = t.obj.name;
     el.threadMenuList.innerHTML = threadMenuRows(t);
     el.threadMenu.hidden = false;
 }
-function closeThreadMenu() { el.threadMenu.hidden = true; threadMenuArmed = null; }
+function closeThreadMenu() { el.threadMenu.hidden = true; }
 
 function removePeerConversation(id) {
     var p = peers.get(id);
@@ -1106,6 +1169,8 @@ function runThreadMenuAction(action) {
     if (!t) return;
     if (action === 'rename') startRename();
     else if (action === 'members') openMembersPanel();
+    else if (action === 'sharegroup') { if (t.kind === 'group') shareGroupConfig(t.obj); }
+    else if (action === 'sendgroup') { if (t.kind === 'group') sendGroupConfig(t.obj); }
     else if (action === 'clear') clearChat();
     else if (action === 'leave') leaveGroup();
     else if (action === 'remove') {
@@ -1164,19 +1229,23 @@ function wireUI() {
         if (!btn) return;
         var action = btn.getAttribute('data-action');
         var destructive = action === 'clear' || action === 'leave' || action === 'remove';
-        if (destructive && threadMenuArmed !== action) {
-            // Disarm any previously armed row before arming this one.
-            Array.prototype.forEach.call(el.threadMenuList.querySelectorAll('.sheet-row.confirm-armed'), function (r) {
-                r.classList.remove('confirm-armed');
-                r.textContent = r.getAttribute('data-label');
-            });
-            threadMenuArmed = action;
-            btn.classList.add('confirm-armed');
-            btn.textContent = 'Tap again to confirm';
+        if (!destructive) {
+            closeThreadMenu();
+            runThreadMenuAction(action);
             return;
         }
-        closeThreadMenu();
-        runThreadMenuAction(action);
+        // A real modal via Arcade.ui.confirm — the launcher brokers it into
+        // this sandboxed frame, where window.confirm is a silent no-op (the
+        // old workaround was a second "tap again to confirm" tap). Cancel —
+        // or an old launcher without the ui.bridge cap — resolves false and
+        // nothing happens.
+        Arcade.ui.confirm(btn.getAttribute('data-label') + ' — are you sure?', {
+            okLabel: btn.getAttribute('data-label')
+        }).then(function (yes) {
+            if (!yes) return;
+            closeThreadMenu();
+            runThreadMenuAction(action);
+        });
     });
 
     el.groupModalSave.addEventListener('click', submitGroupModal);
@@ -1272,6 +1341,11 @@ function init() {
     Arcade.peer.onMessage(onPeerMessage);
     Arcade.peer.onReady(onPeerReady);
     Arcade.peer.onPeersChange(onPeersChange);
+
+    // Group hand-off via share codes / deep links / launcher pushes — the
+    // SDK queues configs that arrive before this registration, so a deep
+    // link that mounted the app is not lost.
+    Arcade.configs.register('group', onGroupConfig);
 
     if (Arcade.onStateReplaced) {
         Arcade.onStateReplaced(function () {
