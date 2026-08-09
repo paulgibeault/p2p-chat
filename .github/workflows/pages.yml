@@ -17,9 +17,13 @@ permissions:
   id-token: write
 
 # Per-ref, so a PR run never cancels main's deploy.
+#
+# Cancelling is for PRs ONLY. Racing runs on main gains nothing: the loser is a
+# publish that simply never happened, and the origin is left on whichever build
+# got there first rather than the newest one. Pushes to main queue and drain.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fleet:
