@@ -247,6 +247,17 @@ body {
 }
 .new-chat-btn:hover { filter: brightness(1.08); }
 .new-chat-btn[hidden] { display: none; }
+/* The header's ask-to-chat door. Same footprint as ＋ so the row stays even,
+   but not a second primary: ＋ makes a thing, this one sends a request. Two
+   filled accent circles side by side would just be two buttons arguing. */
+#headerInviteBtn {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+#headerInviteBtn:hover { border-color: var(--accent); filter: none; }
+#headerInviteBtn:disabled { opacity: 0.5; cursor: default; }
 
 .peer-archived-hint {
   text-align: center;
@@ -595,6 +606,21 @@ body {
   font-size: 0.82rem;
   padding: 2rem 1rem;
 }
+.empty-hint[hidden] { display: none; }
+.empty-lead { margin: 0 auto; max-width: 26rem; line-height: 1.5; }
+/* The door, not the explanation: on an empty screen it is the one thing that
+   does something, so it gets the accent treatment and its own space. */
+.empty-cta { margin-top: 1.1rem; }
+.empty-cta[hidden] { display: none; }
+/* knock()'s answer. Sits under the button it belongs to and keeps the muted
+   voice — it reports what happened, it is not a second instruction. */
+.empty-note {
+  margin: 0.9rem auto 0;
+  max-width: 26rem;
+  line-height: 1.45;
+  font-size: 0.78rem;
+}
+.empty-note[hidden] { display: none; }
 
 /* ---- Lightbox ---- */
 .lightbox {
