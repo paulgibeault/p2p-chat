@@ -38,12 +38,20 @@
           <span class="dot" id="connDot"></span>
           <span class="connLabel" id="connLabel">Unavailable</span>
         </span>
+        <button type="button" class="new-chat-btn" id="headerInviteBtn" title="Ask connected devices to chat" aria-label="Ask connected devices to chat" hidden>👋</button>
         <button type="button" class="new-chat-btn" id="newChatBtn" title="New group chat" aria-label="Start a new group chat" hidden>+</button>
       </div>
     </header>
 
     <nav class="conv-list" id="convList" aria-label="Chats" hidden></nav>
-    <p class="empty-hint" id="peersEmptyHint" hidden>Pair with a peer from the arcade's Multiplayer menu to start a chat. Every peer you've talked to gets its own conversation here — rename them or start a group once you know a few people.</p>
+    <!-- The copy is set from app.js (renderEmptyState): it branches on whether
+         this launcher can be asked to propose a chat, and one owner of the
+         sentence beats a default in the markup that is wrong half the time. -->
+    <div class="empty-hint" id="peersEmptyHint" hidden>
+      <p class="empty-lead" id="emptyText"></p>
+      <button type="button" class="send-btn empty-cta" id="inviteBtn" hidden>👋 Ask to chat</button>
+      <p class="empty-note" id="emptyNote" aria-live="polite" hidden></p>
+    </div>
   </section>
 
   <section class="screen" id="screenThread" hidden>
@@ -67,7 +75,7 @@
     <div class="composer" id="composer">
       <button type="button" class="icon-btn" id="attachBtn" title="Attach a file" aria-label="Attach a file" disabled>📎</button>
       <input type="file" id="fileInput" multiple hidden>
-      <input type="text" id="textInput" placeholder="Pair with a peer to start chatting…" autocomplete="off" disabled maxlength="2000">
+      <input type="text" id="textInput" placeholder="No one to send to yet…" autocomplete="off" disabled maxlength="2000">
       <button type="button" class="send-btn" id="sendBtn" disabled>Send</button>
     </div>
 

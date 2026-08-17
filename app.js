@@ -3,7 +3,14 @@
 
 // ---- tunables ----------------------------------------------------------
 var RAW_CHUNK_BYTES = 9000;           // ~12000 base64 chars/chunk, well under data-channel limits
-var MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB per file — demo cap, no framework-level chunking helper exists
+// 5 MB per file — a demo cap, and NOT for want of a framework helper. The SDK
+// ships `sendBlob`, and it honours `{to}`; this app keeps its own chunking for
+// three reasons that survive: fanning one file to a SUBSET of a group means one
+// sendBlob per member (N re-reads, re-hashes and re-chunks of the same bytes
+// under N transfer ids), the blob envelope has nowhere to hang the `groupId`
+// every frame here needs, and one dead target rejects the whole promise instead
+// of being pruned from the fan-out. See paulgibeault/p2p-chat#18.
+var MAX_FILE_BYTES = 5 * 1024 * 1024;
 var HISTORY_LIMIT = 200;              // per thread
 var MAX_KNOWN_PEERS = 30;             // evict the least-recently-seen non-live peer beyond this
 var CHUNK_PACE_MS = 0;                // yield to the event loop between chunks
@@ -123,13 +130,21 @@ function isPreviewable(mime) {
 // ---- state ---------------------------------------------------------------
 // One thread per peer we've ever exchanged identities with (deviceId ->
 // thread), plus one thread per group chat we're a member of (groupId ->
-// thread). Any number of peer threads can be simultaneously live — the
-// launcher's transport is a star topology (a host + any number of
-// joiners), not strictly 1:1 (v2.0).
+// thread). Any number of peer threads can be simultaneously live: the roster
+// holds every device this chat is OPEN with, and that is a set, not a pair.
 var peers = new Map();
 var groups = new Map();
-var roster = [];          // last Arcade.peer.peers() snapshot: [{deviceId,name,status,direct}]
-var knownLiveIds = new Set(); // deviceIds we've already greeted this "arrival" (dedupes onReady)
+// Last Arcade.peer.peers() snapshot: [{deviceId,name,status,direct}]. Every
+// entry is direct — the roster is the devices this game is open with, one
+// scope per link, and the launcher never forwards a frame between links.
+var roster = [];
+// Devices we have already greeted on this arrival — a dedupe set for onReady,
+// and NOTHING MORE. It was called knownLiveIds while it doubled as the
+// relay-era liveness fallback; isLive() answers from the roster alone now, and
+// the old name kept implying this set knows who is reachable. It does not, and
+// a reader who believed it would rebuild the fallback from the name up.
+var greetedIds = new Set();
+var canInvite = false;    // launcher advertises 'peer.invite' — read once at boot
 var viewKey = null;       // 'p:<deviceId>' or 'g:<groupId>' — thread currently shown
 var currentStatus = null; // overall Arcade.peer.status() — session-wide transport health
 var pausedSends = [];     // resolvers for sendChunk() calls parked while status === 'interrupted'
@@ -144,7 +159,11 @@ var el = {
     screenThread: document.getElementById('screenThread'),
     convList: document.getElementById('convList'),
     newChatBtn: document.getElementById('newChatBtn'),
+    headerInviteBtn: document.getElementById('headerInviteBtn'),
     peersEmptyHint: document.getElementById('peersEmptyHint'),
+    emptyText: document.getElementById('emptyText'),
+    inviteBtn: document.getElementById('inviteBtn'),
+    emptyNote: document.getElementById('emptyNote'),
     backBtn: document.getElementById('backBtn'),
     threadName: document.getElementById('threadName'),
     threadSub: document.getElementById('threadSub'),
@@ -185,19 +204,79 @@ function myDeviceId() {
     return self ? self.deviceId : null;
 }
 
+// THE ROSTER IS THE WHOLE ANSWER, and it used to not be. This function once
+// fell back to "we heard onReady from them and our own session is still up",
+// because a joiner's roster held only the host while fellow joiners were
+// reachable through the host's relay — present on the wire, absent from
+// peers(), and with no departure signal short of our own session ending.
+//
+// That world is gone: the launcher deleted transport relay, so every device we
+// can reach is a device we hold a link to, and every one of them is in the
+// roster with a status. A device missing from it is not a device we might
+// reach anyway — it is unreachable, and saying so is the point.
 function isLive(deviceId) {
     for (var i = 0; i < roster.length; i++) {
         if (roster[i].deviceId === deviceId) return roster[i].status === 'connected' || roster[i].status === 'interrupted';
     }
-    // Arcade.peer.peers() is direct-links-only (a joiner's roster holds just
-    // the host — other joiners are reachable only via the host bridge and
-    // are, per the framework's own docs, "a game-level concern"). Such a
-    // peer still fires onReady and can still be sent to with {to}, so treat
-    // "we've heard ready from them and our own session is still up" as the
-    // best-effort liveness proxy the framework leaves us to build — there's
-    // no departure signal for an indirect peer short of the whole session
-    // ending for us.
-    return knownLiveIds.has(deviceId) && (currentStatus === 'connected' || currentStatus === 'interrupted');
+    return false;
+}
+
+// ---- the invite door ----------------------------------------------------
+// A CONNECTION IS NO LONGER PERMISSION TO CHAT. Two devices that finished the
+// pairing ceremony stay connected for good, but this game is live on that link
+// only while BOTH ends have agreed to run it — an open-game scope. Something
+// therefore has to propose, and the empty conversation list is the exact
+// moment the user has said they want somebody: sending them off to the
+// launcher's Multiplayer menu to re-run a ceremony they already completed is
+// the wrong-door failure this screen has been causing.
+//
+// WE CANNOT SEE WHAT WE ARE ASKING. peers() holds only the devices this chat is
+// open with, so a paired device with no scope open is invisible from in here —
+// the count invite() resolves is the only evidence this app ever gets that such
+// devices exist. Hence the answer is reported AFTER the ask rather than
+// predicted before it, and there is no "you have connections" copy to render up
+// front: the launcher is the only side that can say that (its own nudge is the
+// fast-follow for it).
+//
+// NO FALLBACK PROTOCOL. Consent is the launcher's to take — a game may ask and
+// never grant — so on a launcher without the cap the door is not shown at all
+// and the copy points at the menu, rather than this app inventing a second,
+// worse proposal of its own.
+var NOBODY_TO_ASK = 'Nobody is connected yet — add a device from the arcade\'s Multiplayer menu.';
+
+function readCaps() {
+    var caps = (Arcade.peer && typeof Arcade.peer.caps === 'function') ? Arcade.peer.caps() : [];
+    canInvite = Array.isArray(caps) && caps.indexOf('peer.invite') !== -1
+        && typeof Arcade.peer.invite === 'function';
+}
+
+function liveRosterCount() {
+    return roster.filter(function (r) { return r.status === 'connected' || r.status === 'interrupted'; }).length;
+}
+
+// Ask the launcher to offer this chat to every connection that doesn't already
+// have it open. Resolves the number of proposals sent — never who accepted:
+// consent comes back later, as a device appearing in the roster.
+//
+// `report` is where the answer goes, and the two doors want different places
+// for it: the empty state has a line under its button, the header button has
+// nowhere but a toast.
+function knock(btn, report) {
+    if (!canInvite) return Promise.resolve(0);
+    if (btn) btn.disabled = true;
+    return Arcade.peer.invite().catch(function () { return 0; }).then(function (sent) {
+        sent = typeof sent === 'number' ? sent : 0;
+        // Zero has two causes and they deserve different sentences. The split
+        // the launcher makes with connectedPeers() is one this app can make
+        // too, but only in the direction that matters: a non-empty roster
+        // proves the zero meant "already here", while an empty one leaves
+        // "nobody is connected" as the only thing we can honestly say.
+        if (sent > 0) report('Asked ' + sent + (sent === 1 ? ' device' : ' devices') + ' to chat — they appear here when they say yes.');
+        else if (liveRosterCount() > 0) report('Everyone connected is already in this chat.');
+        else report(NOBODY_TO_ASK);
+        if (btn) btn.disabled = false;
+        return sent;
+    });
 }
 
 // ---- thread bookkeeping ------------------------------------------------
@@ -453,11 +532,27 @@ function rowHtml(thread, entry) {
         return '<div class="msg-row sys" data-id="' + entry.id + '"><div class="bubble">' + escapeHtml(entry.text) + '</div></div>';
     }
     var bubbleInner = entry.kind === 'file' ? fileBubbleInner(thread, entry) : escapeHtml(entry.text);
-    var meta = formatTime(entry.ts) + (entry.failed ? ' · not delivered' : '');
     var sender = (entry.dir === 'in' && entry.fromName) ? '<span class="msg-sender">' + escapeHtml(entry.fromName) + '</span>' : '';
     return '<div class="msg-row ' + entry.dir + '" data-id="' + entry.id + '">' +
-        '<div class="bubble">' + sender + bubbleInner + '<span class="msg-meta">' + meta + '</span></div>' +
+        '<div class="bubble">' + sender + bubbleInner + '<span class="msg-meta">' + escapeHtml(metaFor(entry)) + '</span></div>' +
         '</div>';
+}
+
+// The line under a bubble: time, then whatever qualifies it. `reach` is only
+// ever set on a group send that reached some members and not others.
+function metaFor(entry) {
+    return formatTime(entry.ts)
+        + (entry.failed ? ' · not delivered' : '')
+        + (entry.reach ? ' · sent to ' + entry.reach.sent + ' of ' + entry.reach.of : '');
+}
+
+// A file's meta is written once and then outlives its own bubble: the card is
+// swapped in place as the transfer progresses (updateFileRowInMessages), which
+// leaves the meta beside it untouched. The completion branch learns the real
+// fan-out, so it needs a way to say so without re-rendering the thread.
+function updateRowMetaInMessages(entry) {
+    var span = el.messages.querySelector('.msg-row[data-id="' + entry.id + '"] .msg-meta');
+    if (span) span.textContent = metaFor(entry);
 }
 
 function appendRow(thread, entry) {
@@ -495,14 +590,48 @@ function initialFor(name) { return (name || '?').trim().charAt(0).toUpperCase() 
 
 // Per-member presence chips shown on a group's list row — re-rendered on
 // every roster/status event, so the dots track liveness in real time.
+//
+// A DOT IS A DELIVERY PROMISE, so the tooltip says what the dot means rather
+// than leaving "offline" to be read as "will get it later". A member outside
+// the roster is not reachable from this device AT ALL: there is no relay any
+// more, so nothing sent in this group reaches them, now or on reconnect. What
+// this app cannot tell — and deliberately does not guess — is WHY they are
+// outside it: no link at all, and a link with this chat not open, look
+// identical from in here.
 function groupMembersInline(g) {
     var me = myDeviceId();
     return g.members
         .filter(function (m) { return m.deviceId !== me; })
         .map(function (m) {
             var on = isLive(m.deviceId);
-            return '<span class="member-chip' + (on ? ' online' : '') + '"><span class="chip-dot"></span>' + escapeHtml(m.name) + '</span>';
+            var title = escapeHtml(m.name) + (on
+                ? ' — in this chat, and receiving'
+                : ' — not in this chat, and nothing sent here reaches them');
+            return '<span class="member-chip' + (on ? ' online' : '') + '" title="' + title + '"><span class="chip-dot"></span>' + escapeHtml(m.name) + '</span>';
         }).join('');
+}
+
+// THE EMPTY STATE, AND THE SENTENCE THAT USED TO BE WRONG HERE. This screen
+// told a user with no live chat to go to the Multiplayer menu and pair — and
+// the status pill agreed with it, reading "Not paired". Under open-game scopes
+// neither was true: `idle` means nobody has agreed to chat with you YET, which
+// says nothing at all about pairing, so somebody with four linked devices was
+// being sent to re-run a ceremony they had already finished.
+//
+// So the ask is the primary action now, and the pairing advice is what we say
+// only once the ask has come back empty (knock's NOBODY_TO_ASK) — the one case
+// where it is the true answer.
+function renderEmptyState(show) {
+    el.peersEmptyHint.hidden = !show;
+    el.emptyText.textContent = canInvite
+        ? 'No one is in this chat yet. A connection on its own is not enough — both devices have to agree to chat — so ask the devices you are connected to.'
+        : 'Connect a device from the arcade\'s Multiplayer menu to start a chat.';
+    el.inviteBtn.hidden = !canInvite;
+    if (!show) setEmptyNote('');
+}
+function setEmptyNote(text) {
+    el.emptyNote.textContent = text || '';
+    el.emptyNote.hidden = !text;
 }
 
 // Renders the LRU conversation list (orderedThreads() is already sorted
@@ -512,8 +641,13 @@ function groupMembersInline(g) {
 function renderConvList() {
     var threads = orderedThreads();
     el.convList.hidden = threads.length === 0;
-    el.peersEmptyHint.hidden = threads.length !== 0;
     el.newChatBtn.hidden = peers.size === 0;
+    renderEmptyState(threads.length === 0);
+    // One door per screen state: the empty state owns the ask while the list is
+    // empty (it is the whole screen), the header owns it once there are threads
+    // to sit above — which is the case where the old copy sent people to the
+    // Multiplayer menu to "reconnect" a link that was never broken.
+    el.headerInviteBtn.hidden = !canInvite || currentStatus === 'unavailable' || threads.length === 0;
     el.convList.innerHTML = threads.map(function (t) {
         var isLiveNow = t.kind === 'peer' ? isLive(t.id) : groupHasAnyLiveMember(t.obj);
         var preview = lastMessagePreviewFor(t.obj);
@@ -538,11 +672,18 @@ function updateThreadHeader() {
     if (!t) return;
     el.threadName.textContent = t.obj.name;
     if (t.kind === 'group') {
+        // "N online" read as a fact about the members; it is really a fact
+        // about US — how many of them THIS device can reach — and with the
+        // relay gone those two stopped being the same number. A member can be
+        // sitting in the group on their own phone, connected to somebody else,
+        // and still receive nothing we send here. So the subtitle counts
+        // reachability and names it, rather than implying presence.
         var total = t.obj.members.length;
         var online = liveGroupMembers(t.obj).length;
-        el.threadSub.textContent = total + (total === 1 ? ' member' : ' members') + (online ? ' · ' + online + ' online' : '');
+        el.threadSub.textContent = total + (total === 1 ? ' member' : ' members')
+            + ' · ' + (online ? online + ' in this chat' : 'nobody in this chat');
     } else {
-        el.threadSub.textContent = isLive(t.obj.id) ? 'online' : 'offline';
+        el.threadSub.textContent = isLive(t.obj.id) ? 'in this chat' : 'not in this chat';
     }
 }
 
@@ -558,7 +699,7 @@ function setComposerEnabled(on, placeholder) {
     el.textInput.disabled = !on;
     el.sendBtn.disabled = !on;
     el.attachBtn.disabled = !on;
-    el.textInput.placeholder = placeholder || (on ? 'Type a message…' : 'Pair with a peer to start chatting…');
+    el.textInput.placeholder = placeholder || (on ? 'Type a message…' : 'No one to send to yet…');
 }
 
 function updateComposerForView() {
@@ -573,11 +714,18 @@ function updateComposerForView() {
         setComposerEnabled(true);
         el.peerArchivedHint.hidden = true;
     } else {
-        setComposerEnabled(false, 'Reconnect to send messages…');
+        // "Reconnect" was the wrong verb the moment relay went away: the link
+        // is very often still up and it is the CHAT that is closed, so telling
+        // someone to go reconnect sends them to fix something that isn't
+        // broken. On a launcher we can ask through, the honest instruction is
+        // to ask again — the ＋-row door up on Chats does it.
+        setComposerEnabled(false, canInvite ? 'Ask to chat to send messages…' : 'Reconnect to send messages…');
         el.peerArchivedHint.hidden = false;
         el.peerArchivedHint.textContent = t.kind === 'group' && t.obj.left
             ? 'You left this group — viewing history only.'
-            : 'Viewing history — open the arcade\'s Multiplayer menu to reconnect and send new messages.';
+            : (canInvite
+                ? 'Viewing history — nobody here has this chat open. Use 👋 on the Chats screen to ask again.'
+                : 'Viewing history — open the arcade\'s Multiplayer menu to reconnect and send new messages.');
     }
 }
 
@@ -639,15 +787,20 @@ function updateConnUI(status) {
     currentStatus = status;
     el.connDot.className = 'dot ' + status;
     if (status === 'unavailable') el.connLabel.textContent = 'Standalone';
-    else if (status === 'idle') el.connLabel.textContent = 'Not paired';
+    // 'idle' IS NOT 'NOT PAIRED'. It says no scope is open — nobody has agreed
+    // to chat yet — and it is perfectly reachable with several devices paired
+    // and connected. The pill is the one always-visible surface, so it was the
+    // loudest place this app told users to go fix their pairing.
+    else if (status === 'idle') el.connLabel.textContent = 'Nobody yet';
     else if (status === 'connecting') el.connLabel.textContent = 'Connecting…';
     else if (status === 'interrupted') el.connLabel.textContent = 'Reconnecting…';
     else {
-        var live = roster.filter(function (r) { return r.status === 'connected' || r.status === 'interrupted'; }).length;
+        var live = liveRosterCount();
         el.connLabel.textContent = live > 1 ? live + ' peers' : 'Connected';
     }
-    // Status flips change isLive() for indirect peers too — refresh every
-    // presence dot (list rows, member chips, thread subtitle), not just the pill.
+    // A status flip moves the pill, the doors and the composer; the per-peer
+    // dots come from the roster and arrive on their own event. Re-render the
+    // lot anyway — one path in, no partial screens.
     renderConvList();
     updateThreadHeader();
     updateComposerForView();
@@ -657,13 +810,13 @@ function updateConnUI(status) {
 function onPeerReady(info) {
     var id = sanitizeId(info.deviceId);
     if (!id) return;
-    var wasKnownLive = knownLiveIds.has(id);
+    var wasGreeted = greetedIds.has(id);
     var p = ensurePeer(id, info.name);
-    if (!wasKnownLive) {
-        knownLiveIds.add(id);
+    if (!wasGreeted) {
+        greetedIds.add(id);
         // No auto-open: the conversation surfaces (freshly bumped) at the top
         // of the list and the user chooses when to enter it.
-        pushSystemFor(p, 'Connected — chatting with ' + p.name);
+        pushSystemFor(p, p.name + ' joined the chat');
         sfx('peer-joined');
         resyncGroupsFor(id);
     }
@@ -680,10 +833,17 @@ function onPeersChange(list) {
 
     Object.keys(prevIds).forEach(function (id) {
         if (nowIds[id]) return;
-        knownLiveIds.delete(id);
+        greetedIds.delete(id);
         var p = peers.get(id);
         if (!p) return;
-        pushSystemFor(p, p.name + ' disconnected');
+        // "Disconnected" was the old world's word for this and it is the same
+        // class of wrong sentence as "Not paired" was: leaving the ROSTER means
+        // leaving the chat — they closed it, quit it, or the launcher evicted
+        // it from its frame pool — and the connection is usually still up. A
+        // dead link lands here too, and "left the chat" is true of that as
+        // well, so one honest sentence covers both rather than one confident
+        // sentence covering the rarer half.
+        pushSystemFor(p, p.name + ' left the chat');
         sfx('peer-left');
         p.pendingReceives.clear();
         p.history.forEach(function (m) {
@@ -870,16 +1030,23 @@ function sendText(text) {
     if (!t) return;
     var targets = targetsFor(t);
     var id = uid(), ts = Date.now();
-    var okAny = false;
+    var delivered = 0;
     targets.forEach(function (deviceId) {
         var payload = { t: 'msg', id: id, ts: ts, text: text };
         if (t.kind === 'group') payload.groupId = t.obj.id;
-        if (Arcade.peer.send(payload, { to: deviceId })) okAny = true;
+        if (Arcade.peer.send(payload, { to: deviceId })) delivered++;
     });
     var entry = { id: id, dir: 'out', kind: 'text', text: text, ts: ts };
-    if (!okAny) entry.failed = true;
+    if (!delivered) entry.failed = true;
+    // A GROUP SEND IS A FAN-OUT, and one bubble with a timestamp implied it
+    // reached the whole group. It reaches the members this device holds a link
+    // to, and with the relay gone that can be a minority of them — so a partial
+    // fan-out records what it actually reached and the bubble says so. Silent
+    // on the whole-group case: a receipt on every message is noise, and the
+    // absence of one is then meaningful.
+    else if (t.kind === 'group' && delivered < targets.length) entry.reach = { sent: delivered, of: targets.length };
     commitEntryFor(t.obj, entry);
-    if (okAny) sfx('message-sent'); else sfx('error');
+    if (delivered) sfx('message-sent'); else sfx('error');
 }
 
 function sendFile(file) {
@@ -938,8 +1105,12 @@ function sendFile(file) {
                 });
                 entry.file.state = 'done';
                 entry.file.progress = 100;
+                // Same fan-out honesty as sendText, from the one place that
+                // knows the answer: `active` is what survived every prune, so
+                // a group file that reached two of four says two of four.
+                if (groupId && active.length < targets.length) entry.reach = { sent: active.length, of: targets.length };
                 persist();
-                if (viewKey === t.key) updateFileRowInMessages(thread, id);
+                if (viewKey === t.key) { updateFileRowInMessages(thread, id); updateRowMetaInMessages(entry); }
                 sfx('transfer-complete');
                 return;
             }
@@ -1219,6 +1390,12 @@ function wireUI() {
         showScreen('thread');
     });
     el.newChatBtn.addEventListener('click', openCreateGroupModal);
+    // Two buttons, one door (knock). The empty state answers in place; the
+    // header has no room for a sentence, so it answers in a toast.
+    el.inviteBtn.addEventListener('click', function () { knock(el.inviteBtn, setEmptyNote); });
+    el.headerInviteBtn.addEventListener('click', function () {
+        knock(el.headerInviteBtn, function (text) { Arcade.ui.toast(text); });
+    });
     el.backBtn.addEventListener('click', function () { showScreen('list'); });
 
     el.menuBtn.addEventListener('click', openThreadMenu);
@@ -1322,20 +1499,38 @@ function wireUI() {
 function init() {
     if (Arcade.state && Arcade.state.migrate) Arcade.state.migrate('v1', function () {}); // no legacy keys to move; satisfies the migration sentinel
     registerSfxCues(); // A1: one audio registration site, at boot
+    // Before the first render: the empty state and the header door both branch
+    // on the cap, and a screen that paints the no-cap copy and then swaps it
+    // is a screen that flickered a wrong instruction.
+    readCaps();
+    // NO KNOCK AT MOUNT, deliberately, and this is where cardstock's door and
+    // this one part company. Opening a card game IS the intention to play, so
+    // it asks on mount; opening a chat is as often reading yesterday's
+    // messages, and a proposal fired on every launch is exactly the prompt D4
+    // flagged as its veto point — the spare laptop lighting up because a phone
+    // was unlocked. The user taps to ask.
     peers = loadPeers();
     groups = loadGroups();
     viewKey = null; // list-first: nothing is "open" until the user taps a conversation
     wireUI();
+
+    // TRANSPORT STATE BEFORE THE FIRST PAINT. renderConvList decides the header
+    // door from currentStatus and draws every row's dot from the roster, so
+    // reading them after the first render meant one frame of a screen that knew
+    // nothing about the session it was already in — long enough, on a mid-
+    // session mount, for the ask-to-chat door to appear and then vanish, which
+    // reads as a glitch rather than as a door.
+    roster = Arcade.peer.peers();
+    roster.forEach(function (r) { if (r.status === 'connected' || r.status === 'interrupted') greetedIds.add(r.deviceId); });
+    currentStatus = Arcade.peer.status();
+
     showScreen('list');
     renderAllForView();
-
-    roster = Arcade.peer.peers();
-    roster.forEach(function (r) { if (r.status === 'connected' || r.status === 'interrupted') knownLiveIds.add(r.deviceId); });
 
     // A game mounted mid-session can already be 'connected' — route the
     // initial read through the same transition handler as live updates
     // rather than duplicating the "entered connected" logic here.
-    updateConnUI(Arcade.peer.status());
+    updateConnUI(currentStatus);
 
     Arcade.peer.onStatus(updateConnUI);
     Arcade.peer.onMessage(onPeerMessage);
