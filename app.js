@@ -138,7 +138,12 @@ var groups = new Map();
 // entry is direct — the roster is the devices this game is open with, one
 // scope per link, and the launcher never forwards a frame between links.
 var roster = [];
-var knownLiveIds = new Set(); // deviceIds we've already greeted this "arrival" (dedupes onReady)
+// Devices we have already greeted on this arrival — a dedupe set for onReady,
+// and NOTHING MORE. It was called knownLiveIds while it doubled as the
+// relay-era liveness fallback; isLive() answers from the roster alone now, and
+// the old name kept implying this set knows who is reachable. It does not, and
+// a reader who believed it would rebuild the fallback from the name up.
+var greetedIds = new Set();
 var canInvite = false;    // launcher advertises 'peer.invite' — read once at boot
 var viewKey = null;       // 'p:<deviceId>' or 'g:<groupId>' — thread currently shown
 var currentStatus = null; // overall Arcade.peer.status() — session-wide transport health
@@ -805,13 +810,13 @@ function updateConnUI(status) {
 function onPeerReady(info) {
     var id = sanitizeId(info.deviceId);
     if (!id) return;
-    var wasKnownLive = knownLiveIds.has(id);
+    var wasGreeted = greetedIds.has(id);
     var p = ensurePeer(id, info.name);
-    if (!wasKnownLive) {
-        knownLiveIds.add(id);
+    if (!wasGreeted) {
+        greetedIds.add(id);
         // No auto-open: the conversation surfaces (freshly bumped) at the top
         // of the list and the user chooses when to enter it.
-        pushSystemFor(p, 'Connected — chatting with ' + p.name);
+        pushSystemFor(p, p.name + ' joined the chat');
         sfx('peer-joined');
         resyncGroupsFor(id);
     }
@@ -828,10 +833,17 @@ function onPeersChange(list) {
 
     Object.keys(prevIds).forEach(function (id) {
         if (nowIds[id]) return;
-        knownLiveIds.delete(id);
+        greetedIds.delete(id);
         var p = peers.get(id);
         if (!p) return;
-        pushSystemFor(p, p.name + ' disconnected');
+        // "Disconnected" was the old world's word for this and it is the same
+        // class of wrong sentence as "Not paired" was: leaving the ROSTER means
+        // leaving the chat — they closed it, quit it, or the launcher evicted
+        // it from its frame pool — and the connection is usually still up. A
+        // dead link lands here too, and "left the chat" is true of that as
+        // well, so one honest sentence covers both rather than one confident
+        // sentence covering the rarer half.
+        pushSystemFor(p, p.name + ' left the chat');
         sfx('peer-left');
         p.pendingReceives.clear();
         p.history.forEach(function (m) {
@@ -1501,16 +1513,24 @@ function init() {
     groups = loadGroups();
     viewKey = null; // list-first: nothing is "open" until the user taps a conversation
     wireUI();
+
+    // TRANSPORT STATE BEFORE THE FIRST PAINT. renderConvList decides the header
+    // door from currentStatus and draws every row's dot from the roster, so
+    // reading them after the first render meant one frame of a screen that knew
+    // nothing about the session it was already in — long enough, on a mid-
+    // session mount, for the ask-to-chat door to appear and then vanish, which
+    // reads as a glitch rather than as a door.
+    roster = Arcade.peer.peers();
+    roster.forEach(function (r) { if (r.status === 'connected' || r.status === 'interrupted') greetedIds.add(r.deviceId); });
+    currentStatus = Arcade.peer.status();
+
     showScreen('list');
     renderAllForView();
-
-    roster = Arcade.peer.peers();
-    roster.forEach(function (r) { if (r.status === 'connected' || r.status === 'interrupted') knownLiveIds.add(r.deviceId); });
 
     // A game mounted mid-session can already be 'connected' — route the
     // initial read through the same transition handler as live updates
     // rather than duplicating the "entered connected" logic here.
-    updateConnUI(Arcade.peer.status());
+    updateConnUI(currentStatus);
 
     Arcade.peer.onStatus(updateConnUI);
     Arcade.peer.onMessage(onPeerMessage);
