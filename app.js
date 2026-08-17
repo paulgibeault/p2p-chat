@@ -235,8 +235,8 @@ function isLive(deviceId) {
 // the count invite() resolves is the only evidence this app ever gets that such
 // devices exist. Hence the answer is reported AFTER the ask rather than
 // predicted before it, and there is no "you have connections" copy to render up
-// front: the launcher is the only side that can say that (its own nudge is the
-// fast-follow for it).
+// front: the launcher is the only side that can say that, and it does — its
+// topbar invite door marks itself when connections exist with nobody playing.
 //
 // NO FALLBACK PROTOCOL. Consent is the launcher's to take — a game may ask and
 // never grant — so on a launcher without the cap the door is not shown at all
