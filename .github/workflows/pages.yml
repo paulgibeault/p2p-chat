@@ -28,3 +28,6 @@ concurrency:
 jobs:
   fleet:
     uses: paulgibeault/paulgibeault.github.io/.github/workflows/fleet-ci.yml@main
+    with:
+      # Publish the game's offline pack so the launcher can run it with no network.
+      offline_pack: true
