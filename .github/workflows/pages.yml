@@ -30,8 +30,9 @@ jobs:
   fleet:
     uses: paulgibeault/paulgibeault.github.io/.github/workflows/fleet-ci.yml@main
     with:
-      # The fleet norm for any app with a service worker: CI owns the cache
-      # version (§10).
+      # The fleet norm: CI owns the version (§10). This app ships no sw.js or
+      # manifest.json, so the bump moves package.json only (every other
+      # target in tools/bump-version.mjs is optional and guarded).
       version_bump: true
       # Publish the game's offline pack so the launcher can run it with no network.
       offline_pack: true
